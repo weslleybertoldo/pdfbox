@@ -76,21 +76,38 @@ body { @apply bg-slate-950 text-slate-100 antialiased; }
 .textLayer br::selection { background: transparent; }
 
 /* Alças NATIVAS de seleção (Android): o hit-test do arrasto encaixa a
-   fronteira no texto mais próximo, então um vão vertical entre linhas faz a
-   seleção PULAR de linha (o endOfContent abaixo só governa extensão via
-   ponteiro dentro do layer, não as alças). Cada span ganha um ::after
-   invisível com a altura do vão até a linha de baixo (--hit-pad medido em
-   pdfRender.ts): o hit no vão resolve pro próprio span (a linha de CIMA).
-   position:absolute = fora do fluxo → NÃO muda o box/rect do span (geometria,
-   ::selection e --scale-x da v1.1.3 intactos) e, sem conteúdo, não entra na
-   seleção/cópia. */
-.textLayer span.hitPad::after {
+   fronteira no texto mais próximo — vão/margem sem dono faz a seleção PULAR
+   de linha (o endOfContent abaixo só governa extensão via ponteiro dentro do
+   layer, não as alças). BANDA DE TOQUE POR LINHA (v1.1.5): cada linha visual
+   possui a faixa da borda esquerda à direita do layer, do meio do vão acima
+   ao meio do vão abaixo — margem esquerda resolve pro início da linha,
+   direita pro fim, e o tremido vertical do ajuste fino continua na mesma
+   linha. ::after = corpo do span estendido à faixa vertical (+ margem direita
+   no último span da linha); ::before = margem esquerda (só no 1º span da
+   linha). Vars medidas em pdfRender.ts (expandHitAreas) no espaço LOCAL do
+   span (horizontais já divididas pelo --scale-x, que multiplica os offsets
+   dos pseudos). position:absolute = fora do fluxo → NÃO muda o box/rect do
+   span (geometria, ::selection e --scale-x da v1.1.3 intactos); sem conteúdo
+   → nada entra na seleção/cópia; z-index -1 → hit preciso no glifo do próprio
+   span ganha (entre linhas as bandas não se sobrepõem: fronteira no meio do
+   vão). */
+.textLayer span.hitBand::after {
   content: "";
   position: absolute;
-  top: 100%;
+  z-index: -1;
+  top: calc(-1 * var(--hit-above, 0px));
+  bottom: calc(-1 * var(--hit-below, 0px));
   left: 0;
-  right: 0;
-  height: var(--hit-pad, 0);
+  right: calc(-1 * var(--hit-right, 0px));
+}
+.textLayer span.hitBandStart::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: calc(-1 * var(--hit-above, 0px));
+  bottom: calc(-1 * var(--hit-below, 0px));
+  right: 100%;
+  width: var(--hit-left, 0px);
 }
 
 /* endOfContent (viewer oficial): div user-select:none no fim do layer que,

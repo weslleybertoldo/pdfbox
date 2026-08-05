@@ -239,33 +239,54 @@ function correctSpanWidths(
 }
 
 /**
- * Pós-render: expande a ÁREA DE HIT de cada span pra cobrir o vão vertical
- * até a linha seguinte.
+ * Pós-render: BANDA DE TOQUE POR LINHA — cada linha visual do texto "possui"
+ * uma faixa que vai da borda ESQUERDA à borda DIREITA do text layer e, na
+ * vertical, do MEIO do vão pra linha de cima até o MEIO do vão pra linha de
+ * baixo, sem buracos entre linhas consecutivas.
  *
  * As alças NATIVAS de seleção (Android) fazem hit-test no ponto do dedo e
- * encaixam a fronteira no texto mais próximo — arrastar a alça por um vão
- * entre linhas faz a seleção PULAR de linha (bug visto no device; o
- * endOfContent só governa a extensão via ponteiro/mouse dentro do layer).
- * Cada span recebe um ::after invisível (CSS .hitPad em index.css) com a
- * altura do vão até a próxima linha abaixo que o sobrepõe na horizontal: um
- * ponto no vão passa a resolver pro próprio span (a linha de CIMA),
- * determinístico. O ::after é absolute (fora do fluxo) — o box do span, o
- * alinhamento do ::selection e o --scale-x (v1.1.3) ficam intactos, e sem
- * conteúdo nada entra na cópia. Vãos maiores que 3× a altura do span ficam
- * de fora (título→rodapé etc.: comportamento nativo). Leituras e escritas em
- * fases separadas (um único layout). Chamar DEPOIS de correctSpanWidths (a
- * sobreposição horizontal usa as larguras já corrigidas).
+ * encaixam a fronteira no texto mais próximo. A v1.1.4 cobria só o vão ABAIXO
+ * de cada span, na largura do span — dois casos ainda pulavam de linha
+ * (vídeos do device): (1) alça arrastada até a MARGEM esquerda antes do 1º
+ * caractere (região sem dono → hit encaixava no parágrafo de cima, engolindo
+ * linhas) e (2) o tremido vertical natural do dedo no ajuste fino DENTRO da
+ * mesma linha (glifos têm ~19px lógicos) caía no vão/margem acima. Com a
+ * banda, margem esquerda → início da linha; margem direita → fim; tremido
+ * dentro da faixa → continua na mesma linha; vão entre linhas → metade de
+ * cima pro fim da de cima, metade de baixo pro início da de baixo.
+ *
+ * Implementação: spans agrupados em linhas visuais (cluster por sobreposição
+ * vertical ≥50% com o box de REFERÊNCIA da linha — comparar com a união
+ * deixaria a linha "escorregar" e engolir a seguinte). Cada span ganha um
+ * ::after invisível (.hitBand em index.css) = o próprio corpo estendido à
+ * faixa vertical da banda; o span mais à DIREITA estende o ::after até a
+ * borda direita do layer e o mais à ESQUERDA ganha um ::before cobrindo a
+ * margem esquerda (mesma faixa vertical). Vãos ENORMES (título→bloco,
+ * rodapé): cada metade é limitada a 1.5× a altura da linha — além disso o
+ * miolo fica sem dono (comportamento nativo), pra banda não virar uma zona
+ * de captura absurda.
+ *
+ * Pseudo-elementos: position:absolute (fora do fluxo → box/getBoundingClient-
+ * Rect do span, ::selection e --scale-x da v1.1.3 intactos), sem conteúdo
+ * (nada entra na cópia) e z-index -1 (abaixo dos glifos: hit preciso no glifo
+ * ganha; entre linhas as bandas não se sobrepõem — a fronteira é o meio do
+ * vão). Offsets HORIZONTAIS dos pseudos vivem no espaço local do span, que o
+ * transform scaleX(--scale-x) multiplica — daí a divisão por scaleX; na
+ * vertical só a escala de ancestral entra (--min-font-size é fixo em 1 no
+ * CSS). Leituras e escritas em fases separadas (um único layout). Chamar
+ * DEPOIS de correctSpanWidths (usa os --scale-x já corrigidos).
  */
 function expandHitAreas(
   divs: HTMLElement[],
   container: HTMLElement,
   viewport: pdfjs.PageViewport,
 ): void {
-  if (viewport.rotation % 180 !== 0) return; // página de lado: "abaixo" ≠ fluxo do texto
+  if (viewport.rotation % 180 !== 0) return; // página de lado: eixos trocados
   if (!container.offsetWidth) return; // fora do DOM/sem layout
+  const layer = container.getBoundingClientRect();
   // transform de ancestral (ex.: scale() do pinch) entra nos rects; o fator é
   // uniforme, então dá pra dividir fora usando o próprio container
-  const ancestorScale = container.getBoundingClientRect().width / container.offsetWidth;
+  const ancestorScale = layer.width / container.offsetWidth;
   if (!(ancestorScale > 0)) return;
   type Box = { div: HTMLElement; left: number; right: number; top: number; bottom: number };
   const boxes: Box[] = [];
@@ -276,31 +297,56 @@ function expandHitAreas(
     if (r.width > 0 && r.height > 0)
       boxes.push({ div, left: r.left, right: r.right, top: r.top, bottom: r.bottom });
   }
-  const byTop = [...boxes].sort((a, b) => a.top - b.top);
-  const pads: [HTMLElement, number][] = [];
+  if (boxes.length === 0) return;
+  boxes.sort((a, b) => a.top - b.top || a.left - b.left);
+  type Line = { boxes: Box[]; ref: Box; top: number; bottom: number };
+  const lines: Line[] = [];
   for (const b of boxes) {
-    const maxPad = (b.bottom - b.top) * 3;
-    // busca binária: primeiro box (em ordem de top) que começa abaixo deste
-    let lo = 0;
-    let hi = byTop.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (byTop[mid].top < b.bottom) lo = mid + 1;
-      else hi = mid;
-    }
-    for (let j = lo; j < byTop.length; j++) {
-      const o = byTop[j];
-      const gap = o.top - b.bottom;
-      if (gap > maxPad) break; // linha de baixo longe demais: sem pad
-      if (o.right > b.left && o.left < b.right) {
-        if (gap >= 1) pads.push([b.div, gap / ancestorScale]);
-        break; // menor top que sobrepõe = vão real; não olhar mais fundo
+    const line = lines[lines.length - 1];
+    if (line) {
+      const { ref } = line;
+      const overlap = Math.min(ref.bottom, b.bottom) - Math.max(ref.top, b.top);
+      if (overlap >= 0.5 * Math.min(ref.bottom - ref.top, b.bottom - b.top)) {
+        line.boxes.push(b);
+        line.top = Math.min(line.top, b.top);
+        line.bottom = Math.max(line.bottom, b.bottom);
+        continue;
       }
     }
+    lines.push({ boxes: [b], ref: b, top: b.top, bottom: b.bottom });
   }
-  for (const [div, pad] of pads) {
-    div.classList.add("hitPad");
-    div.style.setProperty("--hit-pad", `${pad.toFixed(2)}px`);
+  // fase de escrita (sem mais leituras de layout daqui pra baixo)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const cap = (line.bottom - line.top) * 1.5; // teto por metade em vão enorme
+    const above = Math.max(0, Math.min(
+      i > 0 ? (line.top - lines[i - 1].bottom) / 2 : line.top - layer.top,
+      cap,
+    ));
+    const below = Math.max(0, Math.min(
+      i < lines.length - 1 ? (lines[i + 1].top - line.bottom) / 2 : layer.bottom - line.bottom,
+      cap,
+    ));
+    let first = line.boxes[0];
+    let last = line.boxes[0];
+    for (const b of line.boxes) {
+      if (b.left < first.left) first = b;
+      if (b.right > last.right) last = b;
+    }
+    for (const b of line.boxes) {
+      const sx = parseFloat(b.div.style.getPropertyValue("--scale-x")) || 1;
+      const set = (name: string, px: number) =>
+        b.div.style.setProperty(name, `${px.toFixed(2)}px`);
+      b.div.classList.add("hitBand");
+      set("--hit-above", (b.top - (line.top - above)) / ancestorScale);
+      set("--hit-below", (line.bottom + below - b.bottom) / ancestorScale);
+      if (b === last)
+        set("--hit-right", Math.max(0, layer.right - b.right) / (ancestorScale * sx));
+      if (b === first) {
+        b.div.classList.add("hitBandStart");
+        set("--hit-left", Math.max(0, b.left - layer.left) / (ancestorScale * sx));
+      }
+    }
   }
 }
 
