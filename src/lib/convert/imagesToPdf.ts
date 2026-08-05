@@ -19,7 +19,8 @@ export async function imagesToPdf(files: { bytes: Uint8Array; type: string }[]):
 }
 
 async function reencodeToJpeg(bytes: Uint8Array, type: string): Promise<Uint8Array> {
-  const bmp = await createImageBitmap(new Blob([bytes], { type }));
+  // .slice() garante Uint8Array<ArrayBuffer> (BlobPart exige isso, não ArrayBufferLike genérico)
+  const bmp = await createImageBitmap(new Blob([bytes.slice()], { type }));
   const canvas = document.createElement("canvas");
   canvas.width = bmp.width;
   canvas.height = bmp.height;
