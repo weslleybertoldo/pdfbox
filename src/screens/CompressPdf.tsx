@@ -1,2 +1,71 @@
-const CompressPdf = () => null;
+import { useState } from "react";
+import { Link } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
+import { toast } from "sonner";
+import ProgressBar from "../components/ProgressBar";
+import ResultPanel, { type ResultFile } from "../components/ResultPanel";
+import { pickFiles, readFileAsBytes } from "../lib/files";
+import { compressPdfLight, compressPdfStrong, type CompressMode } from "../lib/convert/compress";
+
+const MODES: { id: CompressMode; label: string; desc: string }[] = [
+  { id: "leve", label: "Leve", desc: "Mantém texto selecionável" },
+  { id: "media", label: "Média", desc: "Páginas viram imagem" },
+  { id: "forte", label: "Forte", desc: "Máxima redução" },
+];
+
+const CompressPdf = () => {
+  const [mode, setMode] = useState<CompressMode>("media");
+  const [progress, setProgress] = useState<number | null>(null);
+  const [result, setResult] = useState<ResultFile[] | null>(null);
+  const [sizeBefore, setSizeBefore] = useState(0);
+
+  const handlePick = async () => {
+    const [f] = await pickFiles("application/pdf");
+    if (!f) return;
+    setResult(null);
+    setSizeBefore(f.size);
+    setProgress(0);
+    try {
+      const bytes = await readFileAsBytes(f);
+      const out = mode === "leve"
+        ? await compressPdfLight(bytes)
+        : await compressPdfStrong(bytes, mode, (d, t) => setProgress((d / t) * 100));
+      // .slice() garante Uint8Array<ArrayBuffer> (BlobPart exige isso, não ArrayBufferLike genérico)
+      setResult([{ blob: new Blob([out.slice()], { type: "application/pdf" }),
+        name: f.name.replace(/\.pdf$/i, "-comprimido.pdf"), collection: "downloads" }]);
+    } catch (e) {
+      toast.error(`Falha: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  return (
+    <div className="p-4 max-w-lg mx-auto space-y-4">
+      <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
+        <ArrowLeft size={16} /> Voltar
+      </Link>
+      <h2 className="text-lg font-semibold">Comprimir PDF</h2>
+      <div className="space-y-2">
+        {MODES.map((m) => (
+          <button key={m.id} type="button" onClick={() => setMode(m.id)}
+            className={`w-full text-left px-4 py-2.5 rounded-xl border text-sm ${
+              mode === m.id ? "border-blue-500 bg-blue-600/10" : "border-slate-800"}`}>
+            <span className="font-medium">{m.label}</span>
+            <span className="block text-xs text-slate-500">{m.desc}</span>
+          </button>
+        ))}
+      </div>
+      {progress !== null ? (
+        <ProgressBar percent={progress} label={`Comprimindo ${Math.round(progress)}%`} />
+      ) : (
+        <button type="button" onClick={handlePick}
+          className="w-full py-3 bg-blue-600 rounded-xl text-sm font-medium">
+          Escolher PDF
+        </button>
+      )}
+      {result && <ResultPanel files={result} sizeBefore={sizeBefore} />}
+    </div>
+  );
+};
 export default CompressPdf;
