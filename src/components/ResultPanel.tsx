@@ -14,11 +14,17 @@ const ResultPanel = ({ files, sizeBefore }: { files: ResultFile[]; sizeBefore?: 
   const total = files.reduce((s, f) => s + f.blob.size, 0);
 
   const handleSave = async () => {
-    try {
-      for (const f of files) await saveToDevice(f.blob, f.name, f.collection);
+    const results = await Promise.allSettled(
+      files.map((f) => saveToDevice(f.blob, f.name, f.collection)),
+    );
+    const ok = results.filter((r) => r.status === "fulfilled").length;
+    const fail = results.length - ok;
+    if (fail === 0) {
       toast.success(files.length > 1 ? `${files.length} arquivos salvos` : "Arquivo salvo");
-    } catch (e) {
-      toast.error(`Erro ao salvar: ${e instanceof Error ? e.message : e}`);
+    } else if (ok === 0) {
+      toast.error("Falha ao salvar os arquivos");
+    } else {
+      toast.warning(`${ok} salvos, ${fail} falharam`);
     }
   };
   const handleShare = async () => {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
@@ -89,12 +89,24 @@ const ACTIONS: Record<string, ActionCfg> = {
   },
 };
 
+const defaultFmt = (action: string): Fmt =>
+  action.includes("html") || action.includes("xlsx") ? "jpg" : "png";
+
 const Convert = () => {
   const { action = "" } = useParams();
   const cfg = ACTIONS[action];
-  const [fmt, setFmt] = useState<Fmt>("png");
+  const [fmt, setFmt] = useState<Fmt>(() => defaultFmt(action));
   const [progress, setProgress] = useState<number | null>(null);
   const [result, setResult] = useState<ResultFile[] | null>(null);
+
+  // HashRouter não remonta a tela ao trocar só o :action (mesmo Route/element) —
+  // reseta formato padrão e resultado ao navegar entre conversões distintas.
+  useEffect(() => {
+    setFmt(defaultFmt(action));
+    setResult(null);
+    setProgress(null);
+  }, [action]);
+
   if (!cfg) return <p className="p-8 text-center">Ação desconhecida.</p>;
 
   const handlePick = async () => {
@@ -120,7 +132,7 @@ const Convert = () => {
       {cfg.askFormat && (
         <div className="flex gap-2">
           {(["png", "jpg"] as const).map((f) => (
-            <button key={f} type="button" onClick={() => setFmt(f)}
+            <button key={f} type="button" onClick={() => { setFmt(f); setResult(null); }}
               className={`px-4 py-1.5 rounded-lg text-sm border ${
                 fmt === f ? "bg-blue-600 border-blue-600" : "border-slate-700 text-slate-400"}`}>
               {action.includes("html") || action.includes("xlsx")

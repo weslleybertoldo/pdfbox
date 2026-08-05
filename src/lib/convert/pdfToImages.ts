@@ -13,6 +13,7 @@ export async function pdfToImages(
   const doc = await loadPdf(bytes);
   try {
     const list = pages ?? Array.from({ length: doc.numPages }, (_, i) => i + 1);
+    if (list.length === 0) throw new Error("PDF sem páginas");
     const out: ImageOut[] = [];
     for (const [i, p] of list.entries()) {
       const canvas = await renderPage(doc, p, 2);
