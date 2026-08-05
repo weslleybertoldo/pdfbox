@@ -7,6 +7,12 @@ interface MediaSaverPlugin {
     mimeType: string;
     collection: "downloads" | "images" | "video";
   }): Promise<{ uri: string }>;
+  saveFromPath(options: {
+    path: string; // caminho absoluto no dispositivo (ex.: cache do VideoCompressor)
+    fileName: string;
+    mimeType: string;
+    collection: "downloads" | "images" | "video";
+  }): Promise<{ uri: string }>;
 }
 const MediaSaver = registerPlugin<MediaSaverPlugin>("MediaSaver");
 
@@ -31,6 +37,23 @@ export async function saveToDevice(
     mimeType: blob.type || "application/octet-stream",
     collection,
   });
+  return uri;
+}
+
+/**
+ * Salva um arquivo já existente no disco nativo (ex.: mp4 comprimido pelo
+ * VideoCompressor) direto no MediaStore, via streaming — sem passar pelo JS.
+ */
+export async function saveFileFromPath(
+  path: string,
+  fileName: string,
+  mimeType: string,
+  collection: "downloads" | "images" | "video",
+): Promise<string> {
+  if (!Capacitor.isNativePlatform()) {
+    throw new Error("saveFileFromPath só está disponível no app nativo.");
+  }
+  const { uri } = await MediaSaver.saveFromPath({ path, fileName, mimeType, collection });
   return uri;
 }
 
