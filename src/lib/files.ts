@@ -11,7 +11,9 @@ export function pickFiles(accept: string, multiple = false): Promise<File[]> {
     input.accept = accept;
     input.multiple = multiple;
     input.onchange = () => resolve(Array.from(input.files ?? []));
-    // cancelamento: resolve vazio ao voltar o foco sem seleção
+    // cancelamento: WebViews Chromium modernas disparam 'cancel' no input
+    input.addEventListener("cancel", () => resolve([]));
+    // cancelamento (fallback): resolve vazio ao voltar o foco sem seleção
     window.addEventListener(
       "focus",
       () => setTimeout(() => resolve(Array.from(input.files ?? [])), 300),
@@ -28,6 +30,7 @@ export async function shareBlob(blob: Blob, fileName: string): Promise<void> {
     a.href = URL.createObjectURL(blob);
     a.download = fileName;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
     return;
   }
   const { uri } = await Filesystem.writeFile({

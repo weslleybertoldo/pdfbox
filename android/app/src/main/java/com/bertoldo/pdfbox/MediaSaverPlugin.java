@@ -1,5 +1,6 @@
 package com.bertoldo.pdfbox;
 
+import android.Manifest;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.net.Uri;
@@ -7,17 +8,26 @@ import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.util.Log;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
 
-@CapacitorPlugin(name = "MediaSaver")
+@CapacitorPlugin(
+  name = "MediaSaver",
+  permissions = @Permission(strings = { Manifest.permission.WRITE_EXTERNAL_STORAGE }, alias = "storage")
+)
 public class MediaSaverPlugin extends Plugin {
+
+  private static final String TAG = "MediaSaver";
 
   /** collection: "downloads" | "images" | "video" */
   @PluginMethod
@@ -25,11 +35,32 @@ public class MediaSaverPlugin extends Plugin {
     String data = call.getString("data");           // base64 sem prefixo
     String fileName = call.getString("fileName");
     String mimeType = call.getString("mimeType");
-    String collection = call.getString("collection", "downloads");
     if (data == null || fileName == null || mimeType == null) {
       call.reject("data, fileName e mimeType são obrigatórios");
       return;
     }
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
+        && getPermissionState("storage") != PermissionState.GRANTED) {
+      requestPermissionForAlias("storage", call, "storagePermCallback");
+      return;
+    }
+    doSave(call);
+  }
+
+  @PermissionCallback
+  private void storagePermCallback(PluginCall call) {
+    if (getPermissionState("storage") == PermissionState.GRANTED) {
+      doSave(call);
+    } else {
+      call.reject("permissão de armazenamento negada");
+    }
+  }
+
+  private void doSave(PluginCall call) {
+    String data = call.getString("data");           // base64 sem prefixo
+    String fileName = call.getString("fileName");
+    String mimeType = call.getString("mimeType");
+    String collection = call.getString("collection", "downloads");
     try {
       byte[] bytes = Base64.decode(data, Base64.DEFAULT);
       String uriStr;
@@ -61,7 +92,8 @@ public class MediaSaverPlugin extends Plugin {
       ret.put("uri", uriStr);
       call.resolve(ret);
     } catch (Exception e) {
-      call.reject("Erro ao salvar: " + e.getMessage());
+      Log.e(TAG, "save failed", e);
+      call.reject("Erro ao salvar arquivo");
     }
   }
 }

@@ -21,6 +21,7 @@ export async function saveToDevice(
     a.href = URL.createObjectURL(blob);
     a.download = fileName;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
     return fileName;
   }
   const base64 = await blobToBase64(blob);
