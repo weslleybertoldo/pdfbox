@@ -57,6 +57,9 @@ captures/
 #*.jks
 #*.keystore
 
+# Release signing config (contains real store/key passwords) — NEVER commit
+key.properties
+
 # External native build folder generated in Android Studio 2.2 and later
 .externalNativeBuild
 .cxx/
