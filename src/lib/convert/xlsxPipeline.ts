@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { htmlToPageCanvases, canvasesToPdf, canvasesToImages } from "./htmlPipeline";
+import { htmlToPageImages, pageImagesToPdf, pageImagesToFiles } from "./htmlPipeline";
 
 /** Cada aba vira uma tabela HTML; abas concatenadas com quebra visual. */
 export async function xlsxToHtml(file: File): Promise<string> {
@@ -9,6 +9,6 @@ export async function xlsxToHtml(file: File): Promise<string> {
     return `<h3 style="font-family:sans-serif">${name}</h3>${table}`;
   }).join('<div style="height:40px"></div>');
 }
-export const xlsxToPdf = async (f: File) => canvasesToPdf(await htmlToPageCanvases(await xlsxToHtml(f)));
+export const xlsxToPdf = async (f: File) => pageImagesToPdf(await htmlToPageImages(await xlsxToHtml(f)));
 export const xlsxToImages = async (f: File, base: string, fmt: "png" | "jpg") =>
-  canvasesToImages(await htmlToPageCanvases(await xlsxToHtml(f)), base, fmt);
+  pageImagesToFiles(await htmlToPageImages(await xlsxToHtml(f), fmt), base, fmt);

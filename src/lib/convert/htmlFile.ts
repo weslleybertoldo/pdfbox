@@ -1,5 +1,5 @@
-import { htmlToPageCanvases, canvasesToPdf, canvasesToImages } from "./htmlPipeline";
+import { htmlToPageImages, pageImagesToPdf, pageImagesToFiles } from "./htmlPipeline";
 
-export const htmlFileToPdf = async (f: File) => canvasesToPdf(await htmlToPageCanvases(await f.text()));
+export const htmlFileToPdf = async (f: File) => pageImagesToPdf(await htmlToPageImages(await f.text()));
 export const htmlFileToImages = async (f: File, base: string, fmt: "png" | "jpg") =>
-  canvasesToImages(await htmlToPageCanvases(await f.text()), base, fmt);
+  pageImagesToFiles(await htmlToPageImages(await f.text(), fmt), base, fmt);
