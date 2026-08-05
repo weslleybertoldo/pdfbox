@@ -6,10 +6,13 @@ App Android **100% offline** de manipulação de PDF: visualizador, conversões,
 
 - **Viewer de PDF** com navegação por páginas e zoom.
 - **Conversões** (todas offline, no próprio device):
-  - PDF ↔ Word (docx)
-  - Imagem → PDF / PDF → Imagens
-  - HTML → PDF
-  - PDF ↔ Excel (xlsx)
+  - PDF → Imagem (PNG/JPG)
+  - PDF → Word (docx)
+  - Imagem → PDF
+  - Imagem → Word (OCR)
+  - Word (docx) → PDF / Imagem
+  - HTML → PDF / Imagem
+  - Excel (xlsx) → PDF / Imagem
 - **Compressão**: PDF, imagem e vídeo.
 - **Organização de páginas**: juntar (merge), dividir (split) e remover páginas de um PDF.
 - **Digitalizar (scan)**: captura via câmera com filtros de imagem (realce de documento) e exportação para PDF.
