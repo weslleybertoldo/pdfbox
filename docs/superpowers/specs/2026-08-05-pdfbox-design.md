@@ -40,6 +40,15 @@ Clone do padrão PhysiqCalc/NutriTrack:
 - Escopo: só `.docx` (não suporta `.doc` legado)
 - Todas as libs empacotadas no bundle (zero CDN/rede)
 
+### 2b. Compressão (offline)
+
+| Alvo | Pipeline | Modos |
+|---|---|---|
+| Comprimir PDF | **Leve**: re-save com pdf-lib (object streams, mantém texto selecionável). **Forte**: pdf.js re-renderiza páginas → JPEG com qualidade escolhida → pdf-lib remonta (reduz muito, perde texto selecionável) | Leve / Média / Forte |
+| Comprimir PNG | `browser-image-compression` (web worker, offline): redução de dimensão e/ou re-encode com qualidade; saída PNG ou JPEG (escolha do usuário) | Leve / Média / Forte |
+
+- UI mostra tamanho antes → depois do resultado antes de salvar
+
 ### 3. Arquivos
 - Entrada: file picker (`<input type="file">` / Capacitor Filesystem)
 - Saída: documentos (.pdf/.docx) → `Downloads/`; PNGs → galeria via MediaStore (padrão PhysiqCalc v2.90)
@@ -55,7 +64,7 @@ Clone do padrão PhysiqCalc/NutriTrack:
 
 ## UI (uma tela + viewer)
 
-- Home: grid de ações de conversão (6 cards) + botão "Abrir PDF" (viewer)
+- Home: grid de ações (8 cards: 6 conversões + Comprimir PDF + Comprimir PNG) + botão "Abrir PDF" (viewer)
 - Fluxo de conversão: escolher arquivo → opções mínimas (páginas, se aplicável) → progresso → resultado com "Salvar"/"Compartilhar"
 - Rodapé fixo na Home com versão + verificar atualizações
 
@@ -72,4 +81,4 @@ Clone do padrão PhysiqCalc/NutriTrack:
 
 ## Fora de escopo (YAGNI)
 
-- `.doc` legado, XLSX/PPTX, edição de PDF, compressão, senha/criptografia, iOS, Play Store
+- `.doc` legado, XLSX/PPTX, edição de PDF, senha/criptografia, iOS, Play Store
