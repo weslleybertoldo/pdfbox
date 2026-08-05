@@ -49,7 +49,8 @@ Clone do padrão PhysiqCalc/NutriTrack:
 | Alvo | Pipeline | Modos |
 |---|---|---|
 | Comprimir PDF | **Leve**: re-save com pdf-lib (object streams, mantém texto selecionável). **Forte**: pdf.js re-renderiza páginas → JPEG com qualidade escolhida → pdf-lib remonta (reduz muito, perde texto selecionável) | Leve / Média / Forte |
-| Comprimir Imagem (PNG/JPG) | `browser-image-compression` (web worker, offline): redução de dimensão e/ou re-encode com qualidade; saída PNG ou JPG (escolha do usuário) | Leve / Média / Forte |
+| Comprimir Imagem/Foto (PNG/JPG/WebP) | `browser-image-compression` (web worker, offline): redução de dimensão e/ou re-encode com qualidade; saída PNG ou JPG (escolha do usuário). Aceita foto da galeria/câmera | Leve / Média / Forte |
+| Comprimir Vídeo (MP4 etc.) | **Plugin nativo Android** (androidx.media3 Transformer): re-encode H.264 com resolução/bitrate por modo, progresso via listener. WASM (ffmpeg.wasm) descartado — estoura memória com vídeo grande no WebView | Leve / Média / Forte |
 
 - UI mostra tamanho antes → depois do resultado antes de salvar
 
@@ -83,8 +84,9 @@ Clone do padrão PhysiqCalc/NutriTrack:
 
 ### 3. Arquivos
 - Entrada: file picker (`<input type="file">` / Capacitor Filesystem)
-- Saída: documentos (.pdf/.docx) → `Downloads/`; PNGs → galeria via MediaStore (padrão PhysiqCalc v2.90)
-- Share sheet (`@capacitor/share`) após cada conversão
+- Saída: documentos (.pdf/.docx) → `Downloads/`; imagens → galeria via MediaStore
+- **Compartilhar em TODO resultado de ação** (conversão, compressão, juntar, dividir, remover páginas, digitalizar): tela de resultado sempre com botões "Salvar" e "Compartilhar" (`@capacitor/share`)
+- **Compartilhar também no viewer**: visualizando qualquer arquivo dentro do app (PDF, imagem, resultado recém-gerado) há botão de compartilhar no topo
 
 ### 4. Update silencioso (padrão skill-wbs-instalacao-silenciosa-app, Caminho A)
 - Plugin nativo `ApkInstallerPlugin.java` copiado do PhysiqCalc (trocar package)
@@ -96,7 +98,7 @@ Clone do padrão PhysiqCalc/NutriTrack:
 
 ## UI (uma tela + viewer)
 
-- Home: grid de ações — conversões (PDF/Word/Imagem/HTML/Excel), Comprimir PDF, Comprimir Imagem, Juntar PDFs, Dividir PDF, Remover páginas, Digitalizar — + botão "Abrir PDF" (viewer)
+- Home: grid de ações — conversões (PDF/Word/Imagem/HTML/Excel), Comprimir PDF, Comprimir Imagem/Foto, Comprimir Vídeo, Juntar PDFs, Dividir PDF, Remover páginas, Digitalizar — + botão "Abrir PDF" (viewer)
 - Fluxo de conversão: escolher arquivo → opções mínimas (páginas, se aplicável) → progresso → resultado com "Salvar"/"Compartilhar"
 - Rodapé fixo na Home com versão + verificar atualizações
 
