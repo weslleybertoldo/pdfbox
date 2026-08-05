@@ -3,7 +3,13 @@ import { Link, useLocation } from "react-router-dom";
 import { ArrowLeft, Share2, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 import { pickFiles, shareBlob } from "../lib/files";
-import { loadPdf, renderPage, destroyPdf, type PdfDoc } from "../lib/pdfRender";
+import {
+  loadPdf,
+  renderPage,
+  renderTextLayer,
+  destroyPdf,
+  type PdfDoc,
+} from "../lib/pdfRender";
 import { consumeOpenFile } from "../lib/openFileStore";
 
 const Viewer = () => {
@@ -80,7 +86,9 @@ const Viewer = () => {
     let cancelled = false;
     const MAX_LIVE = 12;
     const wrappers: HTMLDivElement[] = [];
-    const live = new Map<number, HTMLCanvasElement>(); // páginas com canvas montado
+    // páginas montadas: box = canvas + text layer (descartados juntos)
+    type LivePage = { box: HTMLDivElement; canvas: HTMLCanvasElement; text: { cancel: () => void } };
+    const live = new Map<number, LivePage>();
     const near = new Set<number>(); // páginas dentro do rootMargin
     const wanted = new Set<number>(); // fila de render
     let rendering = false;
@@ -89,12 +97,13 @@ const Viewer = () => {
     const dpr = window.devicePixelRatio || 1;
 
     const discard = (p: number) => {
-      const canvas = live.get(p);
-      if (!canvas) return;
+      const entry = live.get(p);
+      if (!entry) return;
       // placeholder mantém a altura real já medida (setada no render) → scroll estável
-      canvas.width = 0; // libera o backing store imediatamente
-      canvas.height = 0;
-      canvas.remove();
+      entry.text.cancel();
+      entry.canvas.width = 0; // libera o backing store imediatamente
+      entry.canvas.height = 0;
+      entry.box.remove();
       live.delete(p);
     };
 
@@ -131,13 +140,24 @@ const Viewer = () => {
             canvas.height = 0;
             return;
           }
-          canvas.className = "mx-auto rounded shadow max-w-none";
+          // box relativo do tamanho CSS da página: canvas + text layer juntos
+          const box = document.createElement("div");
+          box.className = "relative mx-auto rounded shadow overflow-hidden";
+          box.style.width = `${viewport.width}px`;
+          box.style.height = `${viewport.height}px`;
+          canvas.className = "block";
+          const textDiv = document.createElement("div");
+          textDiv.className = "textLayer";
+          box.append(canvas, textDiv);
+          const text = renderTextLayer(page, textDiv, viewport);
           const wrapper = wrappers[next - 1];
           // altura real (CSS, não física) substitui a estimada
           wrapper.style.height = `${viewport.height}px`;
-          wrapper.replaceChildren(canvas);
-          live.set(next, canvas);
+          wrapper.replaceChildren(box);
+          live.set(next, { box, canvas, text });
           evictFar();
+          // página sem texto/cancelada → segue sem seleção, sem derrubar o viewer
+          await text.promise.catch(() => {});
         }
       } catch (e) {
         // doc destruído/trocado no meio do render (troca legítima) → silencia
@@ -195,6 +215,7 @@ const Viewer = () => {
     return () => {
       cancelled = true;
       observer.disconnect();
+      for (const p of [...live.keys()]) discard(p); // libera canvases/text layers
     };
   }, [doc, zoom]);
 

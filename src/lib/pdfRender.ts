@@ -64,6 +64,28 @@ export async function renderPage(
   return canvas;
 }
 
+/**
+ * Text layer (seleção/cópia de texto): spans transparentes posicionados sobre
+ * o canvas da página. `container` deve ser um `.textLayer` (CSS em index.css)
+ * absoluto sobre o canvas, e `viewport` a MESMA viewport CSS do canvas (escala
+ * lógica, SEM devicePixelRatio) — `--scale-factor` com DPR desalinharia o texto.
+ * Retorna handle com cancel() pro descarte da virtualização.
+ */
+export function renderTextLayer(
+  page: pdfjs.PDFPageProxy,
+  container: HTMLElement,
+  viewport: pdfjs.PageViewport,
+): { promise: Promise<unknown>; cancel: () => void } {
+  container.style.setProperty("--scale-factor", String(viewport.scale));
+  container.style.setProperty("--user-unit", String(viewport.userUnit ?? 1));
+  const layer = new pdfjs.TextLayer({
+    textContentSource: page.streamTextContent(),
+    container,
+    viewport,
+  });
+  return { promise: layer.render(), cancel: () => layer.cancel() };
+}
+
 /** Miniaturas (~140px de largura) para o PageGrid. */
 export async function renderThumbnails(doc: PdfDoc): Promise<string[]> {
   const thumbs: string[] = [];
