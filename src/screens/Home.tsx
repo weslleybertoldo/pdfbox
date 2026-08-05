@@ -6,7 +6,7 @@ import {
 import FooterVersion from "../components/FooterVersion";
 
 const ACTIONS = [
-  { to: "/viewer", icon: Eye, label: "Abrir PDF", desc: "Visualizar" },
+  { to: "/viewer", icon: Eye, label: "Abrir PDF/Word", desc: "Visualizar/editar" },
   { to: "/convert/pdf-to-image", icon: Image, label: "PDF → Imagem", desc: "PNG ou JPG" },
   { to: "/convert/pdf-to-word", icon: FileText, label: "PDF → Word", desc: "Texto + imagens" },
   { to: "/convert/image-to-pdf", icon: FileType, label: "Imagem → PDF", desc: "PNG/JPG/WebP" },

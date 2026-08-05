@@ -43,7 +43,7 @@ export interface BlobStorage {
   remove(id: string): Promise<void>;
 }
 
-export const MAX_PER_CATEGORY = 10;
+export const MAX_PER_CATEGORY = 50;
 export const MAX_TOTAL_BYTES = 200 * 1024 * 1024; // ~200MB globais
 export const MAX_FILE_BYTES = 30 * 1024 * 1024; // 30MB — teto por arquivo
 

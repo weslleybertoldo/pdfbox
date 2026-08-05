@@ -95,16 +95,16 @@ describe("recents: dedup por nome+tamanho", () => {
 });
 
 describe("recents: eviction por categoria", () => {
-  it("12 itens → mantém 10, os 2 mais antigos saem e os bytes são apagados", async () => {
+  it("55 itens → mantém 50, os 5 mais antigos saem e os bytes são apagados", async () => {
     const { api, blobs } = makeRecents();
-    for (let i = 1; i <= 12; i++) await api.addRecent("viewer", file(`f${i}.pdf`, i));
+    for (let i = 1; i <= 55; i++) await api.addRecent("viewer", file(`f${i}.pdf`, i));
     const list = api.listRecents("viewer");
-    expect(list).toHaveLength(10);
-    expect(list[0].name).toBe("f12.pdf");
-    expect(list.at(-1)?.name).toBe("f3.pdf"); // f1 e f2 evictados
-    expect(blobs.size).toBe(10);
+    expect(list).toHaveLength(50);
+    expect(list[0].name).toBe("f55.pdf");
+    expect(list.at(-1)?.name).toBe("f6.pdf"); // f1..f5 evictados
+    expect(blobs.size).toBe(50);
     expect(blobs.has("id-1")).toBe(false);
-    expect(blobs.has("id-2")).toBe(false);
+    expect(blobs.has("id-5")).toBe(false);
   });
 });
 
