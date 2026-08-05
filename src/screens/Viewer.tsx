@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { ArrowLeft, Bold, Italic, List, Pencil, Share2, ZoomIn, ZoomOut } from "lucide-react";
+import {
+  ArrowLeft, Bold, Check, Hand, Highlighter, Italic, List, Pencil, PenLine,
+  Share2, Type, Undo2, X, ZoomIn, ZoomOut,
+} from "lucide-react";
 import { toast } from "sonner";
 import { pickFiles, shareBlob, DOCX_MIME, isDocxFile } from "../lib/files";
 import {
@@ -10,6 +13,12 @@ import {
   destroyPdf,
   type PdfDoc,
 } from "../lib/pdfRender";
+import {
+  annotatePdf,
+  paintAnnotations,
+  type AnnotationMap,
+  type PdfAnnotation,
+} from "../lib/pdfAnnotate";
 import { consumeOpenFile } from "../lib/openFileStore";
 import { docxToHtml } from "../lib/convert/docxToPdf";
 import { sanitizeHtml } from "../lib/convert/htmlPipeline";
@@ -34,6 +43,49 @@ const ToolBtn = ({ label, onClick, children }: {
   </button>
 );
 
+// ── Modo anotação de PDF ─────────────────────────────────────────────────────
+// Anotações vivem em ESTADO por página (annotsRef), em PONTOS PDF com origem
+// topo-esquerda (normalizadas pela escala CSS ao criar) — zoom no meio da
+// anotação não corrompe posições e a virtualização pode descartar/recriar o
+// overlay sem perder nada. Desfazer = stack GLOBAL (última anotação criada,
+// em qualquer página). Scroll durante a anotação: ferramenta "Mão" (overlay
+// vira pointer-events:none); com Texto/Desenho/Marca-texto, 1 dedo é a
+// ferramenta (touch-action:none no overlay) e um 2º dedo CANCELA o traço em
+// andamento; pinch fica desligado (zoom pelos botões do header).
+type AnnotTool = "text" | "draw" | "highlight" | "hand";
+const ANNOT_COLORS: { hex: string; nome: string }[] = [
+  { hex: "#facc15", nome: "amarelo" },
+  { hex: "#ef4444", nome: "vermelho" },
+  { hex: "#3b82f6", nome: "azul" },
+  { hex: "#000000", nome: "preto" },
+];
+const DRAW_PX = 3; // largura do traço em px lógicos na escala de criação
+const TEXT_SIZE_PT = 14; // caixa de texto: tamanho em pontos PDF (proporcional à página)
+/** Limite físico de canvas da WebView (mesmo racional do MAX_CANVAS_DIM do render). */
+const OVERLAY_MAX_DIM = 4096;
+
+/** Botão da toolbar de anotação (com estado ativo/desabilitado). */
+const AnnotBtn = ({ label, active, disabled, onClick, children }: {
+  label: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) => (
+  <button
+    type="button"
+    aria-label={label}
+    title={label}
+    disabled={disabled}
+    onClick={onClick}
+    className={`min-w-[36px] px-2.5 py-1.5 rounded text-xs font-medium flex items-center justify-center ${
+      active ? "bg-blue-600" : "bg-slate-800"
+    } ${disabled ? "opacity-40" : ""}`}
+  >
+    {children}
+  </button>
+);
+
 const Viewer = () => {
   const [doc, setDoc] = useState<PdfDoc | null>(null);
   const [blob, setBlob] = useState<Blob | null>(null); // p/ compartilhar
@@ -52,6 +104,133 @@ const Viewer = () => {
     zoomRef.current = zoom;
   }, [zoom]);
 
+  // ── estado do modo anotação (ver comentário acima do componente) ────────
+  const [annotating, setAnnotating] = useState(false);
+  const [tool, setTool] = useState<AnnotTool>("draw");
+  const [color, setColor] = useState<string>(ANNOT_COLORS[0].hex);
+  const [annotCount, setAnnotCount] = useState(0); // total → repaint + habilita Desfazer
+  const [textDraft, setTextDraft] = useState<
+    { page: number; xPt: number; yPt: number; left: number; top: number } | null
+  >(null);
+  const [textValue, setTextValue] = useState("");
+  const annotsRef = useRef<AnnotationMap>(new Map());
+  const undoRef = useRef<number[]>([]); // páginas na ordem de criação (stack global)
+  const pdfWrapRef = useRef<HTMLDivElement>(null);
+  const textInputRef = useRef<HTMLInputElement>(null);
+  // refs lidas por handlers/efeitos que não re-anexam a cada render
+  const annotatingRef = useRef(annotating);
+  annotatingRef.current = annotating;
+  const toolRef = useRef(tool);
+  toolRef.current = tool;
+  const colorRef = useRef(color);
+  colorRef.current = color;
+  const draftOpenRef = useRef(false);
+  draftOpenRef.current = textDraft !== null;
+  const confirmDraftRef = useRef<() => void>(() => {});
+
+  /** Redesenha um overlay a partir do estado (fonte da verdade: annotsRef). */
+  const repaintOverlay = (cv: HTMLCanvasElement) => {
+    const page = Number(cv.dataset.annotPage);
+    const scale = Number(cv.dataset.scale);
+    const ratio = cv.width / parseFloat(cv.style.width);
+    paintAnnotations(cv, annotsRef.current.get(page) ?? [], scale, ratio);
+  };
+
+  /** Cria (se preciso) o canvas overlay transparente sobre o box da página. */
+  const ensureOverlay = (box: HTMLElement) => {
+    let cv = box.querySelector<HTMLCanvasElement>("canvas[data-annot-page]");
+    if (cv) return cv;
+    const cssW = parseFloat(box.style.width);
+    const cssH = parseFloat(box.style.height);
+    const ratio = Math.min(
+      window.devicePixelRatio || 1,
+      OVERLAY_MAX_DIM / Math.max(cssW, cssH),
+    );
+    cv = document.createElement("canvas");
+    cv.dataset.annotPage = box.dataset.annotBox;
+    cv.dataset.scale = box.dataset.scale;
+    cv.width = Math.floor(cssW * ratio);
+    cv.height = Math.floor(cssH * ratio);
+    cv.className = "absolute inset-0";
+    cv.style.width = `${cssW}px`;
+    cv.style.height = `${cssH}px`;
+    cv.style.zIndex = "2"; // acima do textLayer (z-index 1)
+    cv.style.touchAction = "none"; // 1 dedo = ferramenta (sem scroll nativo no overlay)
+    cv.style.pointerEvents = toolRef.current === "hand" ? "none" : "auto";
+    box.appendChild(cv);
+    repaintOverlay(cv);
+    return cv;
+  };
+
+  const commitAnnot = (page: number, a: PdfAnnotation) => {
+    const list = annotsRef.current.get(page) ?? [];
+    list.push(a);
+    annotsRef.current.set(page, list);
+    undoRef.current.push(page);
+    setAnnotCount((c) => c + 1);
+  };
+
+  const undoAnnot = () => {
+    const page = undoRef.current.pop();
+    if (page === undefined) return;
+    annotsRef.current.get(page)?.pop();
+    setAnnotCount((c) => c - 1);
+  };
+
+  const startAnnotating = () => {
+    setResult(null);
+    setTool("draw");
+    setColor(ANNOT_COLORS[0].hex);
+    setAnnotating(true);
+  };
+
+  /** Cancelar/pós-salvar: descarta as anotações e volta ao modo leitura. */
+  const exitAnnotating = () => {
+    annotsRef.current = new Map();
+    undoRef.current = [];
+    setAnnotCount(0);
+    setTextDraft(null);
+    setTextValue("");
+    setAnnotating(false);
+  };
+
+  /** Confirma a caixa de texto flutuante (vira anotação na posição do tap). */
+  const confirmTextDraft = () => {
+    if (!textDraft) return;
+    const t = textValue.trim();
+    if (t) {
+      commitAnnot(textDraft.page, {
+        kind: "text", x: textDraft.xPt, y: textDraft.yPt, text: t,
+        size: TEXT_SIZE_PT, color,
+      });
+    }
+    setTextDraft(null);
+    setTextValue("");
+  };
+  confirmDraftRef.current = confirmTextDraft;
+
+  /** Salvar: NOVO PDF com as anotações achatadas por cima do original. */
+  const saveAnnotations = async () => {
+    if (!blob) return;
+    if (textDraft && textValue.trim()) confirmTextDraft(); // commit é síncrono no ref
+    if (undoRef.current.length === 0) {
+      toast.info("Nenhuma anotação para salvar");
+      return;
+    }
+    try {
+      const out = await annotatePdf(new Uint8Array(await blob.arrayBuffer()), annotsRef.current);
+      const base = (name ?? "documento").replace(/\.pdf$/i, "");
+      setResult([{
+        blob: new Blob([out.slice()], { type: "application/pdf" }),
+        name: `${base}-anotado.pdf`,
+        collection: "downloads",
+      }]);
+      exitAnnotating();
+    } catch (e) {
+      toast.error(`Erro ao salvar: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
   /** Abre bytes de qualquer origem (picker, intent externo, ResultPanel). */
   const openBytes = async (bytes: Uint8Array, fileName: string, mimeType: string) => {
     // .slice() garante Uint8Array<ArrayBuffer> (BlobPart) e evita o detach
@@ -62,6 +241,7 @@ const Viewer = () => {
     setZoom(1);
     setEditing(false);
     setResult(null);
+    exitAnnotating(); // troca de arquivo descarta anotações em andamento
     if (isDocxFile(fileName, mimeType)) {
       setDoc(null);
       setImgUrl(null);
@@ -227,6 +407,9 @@ const Viewer = () => {
           box.className = "relative mx-auto rounded shadow overflow-hidden";
           box.style.width = `${viewport.width}px`;
           box.style.height = `${viewport.height}px`;
+          // metadados pro modo anotação (overlay recriável pela virtualização)
+          box.dataset.annotBox = String(next);
+          box.dataset.scale = String(scale);
           canvas.className = "block";
           const textDiv = document.createElement("div");
           textDiv.className = "textLayer";
@@ -237,6 +420,8 @@ const Viewer = () => {
           wrapper.style.height = `${viewport.height}px`;
           wrapper.replaceChildren(box);
           live.set(next, { box, canvas, text });
+          // página recriada em modo anotação → overlay volta com as anotações
+          if (annotatingRef.current) ensureOverlay(box);
           evictFar();
           // página sem texto/cancelada → segue sem seleção, sem derrubar o viewer
           await text.promise.catch(() => {});
@@ -307,15 +492,201 @@ const Viewer = () => {
     };
   }, [doc, zoom]);
 
+  // Entrar no modo anotação: overlay nas páginas já vivas (as novas ganham o
+  // seu no pump). Sair: remove todos (as anotações já foram descartadas).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (annotating) {
+      container
+        .querySelectorAll<HTMLElement>("[data-annot-box]")
+        .forEach((box) => ensureOverlay(box));
+    } else {
+      container
+        .querySelectorAll<HTMLCanvasElement>("canvas[data-annot-page]")
+        .forEach((cv) => cv.remove());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotating]);
+
+  // add/desfazer → repinta todos os overlays vivos (≤ MAX_LIVE, barato)
+  useEffect(() => {
+    containerRef.current
+      ?.querySelectorAll<HTMLCanvasElement>("canvas[data-annot-page]")
+      .forEach(repaintOverlay);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotCount]);
+
+  // ferramenta "Mão": overlay deixa o toque passar (scroll normal de 1 dedo)
+  useEffect(() => {
+    containerRef.current
+      ?.querySelectorAll<HTMLCanvasElement>("canvas[data-annot-page]")
+      .forEach((cv) => {
+        cv.style.pointerEvents = tool === "hand" ? "none" : "auto";
+      });
+  }, [tool]);
+
+  // caixa de texto flutuante: foco ao abrir; zoom no meio descarta o rascunho
+  // (a posição CSS guardada ficaria defasada — as anotações JÁ confirmadas
+  // acompanham o zoom normalmente, pois vivem em pontos de página)
+  useEffect(() => {
+    if (textDraft) textInputRef.current?.focus();
+  }, [textDraft]);
+  useEffect(() => {
+    setTextDraft(null);
+    setTextValue("");
+  }, [zoom]);
+
+  // Gestos do modo anotação (delegação no container; move/up na window pra não
+  // perder o traço quando o dedo sai da página). 1 pointer = ferramenta; um 2º
+  // pointerdown no meio do gesto CANCELA o traço em andamento (evita rabisco
+  // acidental quando o usuário tenta rolar com 2 dedos).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!annotating || !doc || !container) return;
+    type Active = {
+      pointerId: number;
+      cv: HTMLCanvasElement;
+      page: number;
+      scale: number;
+      rect: DOMRect;
+      wPt: number;
+      hPt: number;
+      kind: AnnotTool; // ferramenta no momento do pointerdown
+      points: { x: number; y: number }[];
+      start: { x: number; y: number };
+      startClient: { x: number; y: number };
+      moved: boolean;
+    };
+    let active: Active | null = null;
+
+    const toPt = (a: Active, e: PointerEvent) => ({
+      x: Math.min(a.wPt, Math.max(0, (e.clientX - a.rect.left) / a.scale)),
+      y: Math.min(a.hPt, Math.max(0, (e.clientY - a.rect.top) / a.scale)),
+    });
+    const liveStroke = (a: Active): PdfAnnotation => ({
+      kind: "draw", points: a.points, width: DRAW_PX / a.scale, color: colorRef.current,
+    });
+    const liveRect = (a: Active, p: { x: number; y: number }): PdfAnnotation => ({
+      kind: "highlight",
+      x: Math.min(a.start.x, p.x),
+      y: Math.min(a.start.y, p.y),
+      w: Math.abs(p.x - a.start.x),
+      h: Math.abs(p.y - a.start.y),
+      color: colorRef.current,
+    });
+    /** repinta o overlay do gesto: confirmadas + (opcional) anotação ao vivo */
+    const paintLive = (a: Active, extra: PdfAnnotation | null) => {
+      const committed = annotsRef.current.get(a.page) ?? [];
+      const ratio = a.cv.width / parseFloat(a.cv.style.width);
+      paintAnnotations(a.cv, extra ? [...committed, extra] : committed, a.scale, ratio);
+    };
+
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement;
+      if (!(t instanceof HTMLCanvasElement) || !t.dataset.annotPage) return;
+      if (draftOpenRef.current) {
+        confirmDraftRef.current(); // tap fora da caixa de texto = confirmar
+        return;
+      }
+      if (active) {
+        paintLive(active, null); // 2º dedo → cancela o traço em andamento
+        active = null;
+        return;
+      }
+      const kind = toolRef.current;
+      if (kind === "hand") return; // (overlay está pointer-events:none — defensivo)
+      const scale = Number(t.dataset.scale);
+      const a: Active = {
+        pointerId: e.pointerId,
+        cv: t,
+        page: Number(t.dataset.annotPage),
+        scale,
+        rect: t.getBoundingClientRect(),
+        wPt: parseFloat(t.style.width) / scale,
+        hPt: parseFloat(t.style.height) / scale,
+        kind,
+        points: [],
+        start: { x: 0, y: 0 },
+        startClient: { x: e.clientX, y: e.clientY },
+        moved: false,
+      };
+      const p = toPt(a, e);
+      a.start = p;
+      a.points = [p];
+      active = a;
+      if (kind === "draw") paintLive(a, liveStroke(a));
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!active || e.pointerId !== active.pointerId) return;
+      if (
+        Math.hypot(e.clientX - active.startClient.x, e.clientY - active.startClient.y) > 6
+      ) {
+        active.moved = true;
+      }
+      const p = toPt(active, e);
+      if (active.kind === "draw") {
+        active.points.push(p);
+        paintLive(active, liveStroke(active));
+      } else if (active.kind === "highlight") {
+        paintLive(active, liveRect(active, p));
+      }
+    };
+    const onUp = (e: PointerEvent) => {
+      if (!active || e.pointerId !== active.pointerId) return;
+      const a = active;
+      active = null;
+      const p = toPt(a, e);
+      if (a.kind === "text") {
+        // tap (sem arrasto) posiciona a caixa de texto flutuante
+        if (a.moved || !pdfWrapRef.current) return;
+        const wr = pdfWrapRef.current.getBoundingClientRect();
+        setTextValue("");
+        setTextDraft({
+          page: a.page, xPt: p.x, yPt: p.y,
+          left: e.clientX - wr.left, top: e.clientY - wr.top,
+        });
+      } else if (a.kind === "draw") {
+        commitAnnot(a.page, liveStroke(a)); // tap vira "ponto" (path de 1 ponto)
+      } else if (a.kind === "highlight") {
+        const r = liveRect(a, p);
+        if (r.kind === "highlight" && r.w * a.scale > 4 && r.h * a.scale > 4) {
+          commitAnnot(a.page, r);
+        } else {
+          paintLive(a, null); // retângulo mínimo → descarta o preview
+        }
+      }
+    };
+    const onCancel = (e: PointerEvent) => {
+      if (!active || e.pointerId !== active.pointerId) return;
+      paintLive(active, null);
+      active = null;
+    };
+
+    container.addEventListener("pointerdown", onDown);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    return () => {
+      container.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotating, doc]);
+
   // Pinch zoom = zoom do botão: durante o gesto, transform: scale(g) no wrapper
   // das páginas (visual imediato, barato); ao soltar, limpa o transform e
   // re-renderiza na escala final (mesmo fluxo/clamp 0.5–3 dos botões),
   // preservando a posição de scroll aproximada do ponto focal. O zoom nativo
   // da WebView está desligado (meta viewport) e touch-action: pan-x pan-y
   // deixa o browser rolar com 1 dedo mas entrega os pointer events da pinça.
+  // Em modo anotação o pinch fica DESLIGADO (zoom pelos botões) — os pointer
+  // events do desenho têm prioridade.
   useEffect(() => {
     const el = containerRef.current;
-    if (!doc || !el) return;
+    if (!doc || !el || annotating) return;
     const pointers = new Map<number, { x: number; y: number }>();
     let gesture = false;
     let g = 1; // fator do gesto (dist atual / dist inicial), clampado
@@ -399,7 +770,7 @@ const Viewer = () => {
       el.removeEventListener("touchmove", onTouchMove);
       clearTransform();
     };
-  }, [doc]);
+  }, [doc, annotating]);
 
   const hasContent = Boolean(doc || imgUrl || docxHtml);
 
@@ -411,10 +782,12 @@ const Viewer = () => {
           <span className="flex-1 text-sm truncate">{name ?? "Visualizar"}</span>
           {(doc || imgUrl) && (
             <>
-              <button type="button" onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))}>
+              <button type="button" aria-label="Diminuir zoom"
+                onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))}>
                 <ZoomOut size={18} />
               </button>
-              <button type="button" onClick={() => setZoom((z) => Math.min(3, z + 0.25))}>
+              <button type="button" aria-label="Aumentar zoom"
+                onClick={() => setZoom((z) => Math.min(3, z + 0.25))}>
                 <ZoomIn size={18} />
               </button>
             </>
@@ -424,7 +797,12 @@ const Viewer = () => {
               <Pencil size={18} />
             </button>
           )}
-          {hasContent && !editing && (
+          {doc && !annotating && (
+            <button type="button" aria-label="Anotar" onClick={startAnnotating}>
+              <Pencil size={18} />
+            </button>
+          )}
+          {hasContent && !editing && !annotating && (
             <button type="button" aria-label="Compartilhar"
               onClick={() => blob && name && shareBlob(blob, name)}>
               <Share2 size={18} />
@@ -442,7 +820,54 @@ const Viewer = () => {
               </button>
             </>
           )}
+          {annotating && (
+            <>
+              <button type="button" onClick={saveAnnotations}
+                className="px-3 py-1.5 bg-blue-600 rounded-lg text-xs font-medium">
+                Salvar
+              </button>
+              <button type="button" onClick={exitAnnotating}
+                className="px-3 py-1.5 bg-slate-700 rounded-lg text-xs">
+                Cancelar
+              </button>
+            </>
+          )}
         </div>
+        {annotating && (
+          <div className="flex items-center gap-1.5 px-3 pb-2 flex-wrap">
+            <AnnotBtn label="Texto" active={tool === "text"} onClick={() => setTool("text")}>
+              <Type size={16} />
+            </AnnotBtn>
+            <AnnotBtn label="Desenho" active={tool === "draw"} onClick={() => setTool("draw")}>
+              <PenLine size={16} />
+            </AnnotBtn>
+            <AnnotBtn label="Marca-texto" active={tool === "highlight"}
+              onClick={() => setTool("highlight")}>
+              <Highlighter size={16} />
+            </AnnotBtn>
+            <AnnotBtn label="Mover" active={tool === "hand"} onClick={() => setTool("hand")}>
+              <Hand size={16} />
+            </AnnotBtn>
+            <div className="w-px h-5 bg-slate-700 mx-0.5" />
+            {ANNOT_COLORS.map((c) => (
+              <button
+                key={c.hex}
+                type="button"
+                aria-label={`Cor ${c.nome}`}
+                title={`Cor ${c.nome}`}
+                onClick={() => setColor(c.hex)}
+                className={`w-6 h-6 rounded-full border border-slate-600 ${
+                  color === c.hex ? "ring-2 ring-white" : ""
+                }`}
+                style={{ backgroundColor: c.hex }}
+              />
+            ))}
+            <div className="w-px h-5 bg-slate-700 mx-0.5" />
+            <AnnotBtn label="Desfazer" disabled={annotCount === 0} onClick={undoAnnot}>
+              <Undo2 size={16} />
+            </AnnotBtn>
+          </div>
+        )}
         {editing && (
           <div className="flex items-center gap-1.5 px-3 pb-2">
             <ToolBtn label="Negrito" onClick={() => exec("bold")}><Bold size={16} /></ToolBtn>
@@ -479,12 +904,49 @@ const Viewer = () => {
           />
         </div>
       ) : doc ? (
-        <div
-          key="pdf"
-          ref={containerRef}
-          className="flex-1 overflow-auto p-2"
-          style={{ touchAction: "pan-x pan-y" }}
-        />
+        // wrapper relativo: ancora a caixa de texto flutuante (que rola junto
+        // com o conteúdo) sem tocar no container imperativo da virtualização
+        <div key="pdf" ref={pdfWrapRef} className="relative flex-1 flex flex-col">
+          {result && !annotating && (
+            <div className="p-3 pb-0"><ResultPanel files={result} /></div>
+          )}
+          <div
+            ref={containerRef}
+            className="flex-1 overflow-auto p-2"
+            style={{ touchAction: "pan-x pan-y" }}
+          />
+          {textDraft && (
+            <div
+              className="absolute z-20 flex items-center gap-1 bg-slate-900/95 border border-slate-600 rounded-lg p-1 shadow-lg"
+              style={{ left: textDraft.left, top: textDraft.top }}
+            >
+              <input
+                ref={textInputRef}
+                value={textValue}
+                onChange={(e) => setTextValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") confirmTextDraft();
+                  if (e.key === "Escape") setTextDraft(null);
+                }}
+                placeholder="Texto…"
+                aria-label="Texto da anotação"
+                className="w-40 px-2 py-1 bg-slate-800 rounded text-sm outline-none"
+              />
+              <button type="button" aria-label="Confirmar texto"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={confirmTextDraft}
+                className="p-1.5 bg-blue-600 rounded">
+                <Check size={14} />
+              </button>
+              <button type="button" aria-label="Descartar texto"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => setTextDraft(null)}
+                className="p-1.5 bg-slate-700 rounded">
+                <X size={14} />
+              </button>
+            </div>
+          )}
+        </div>
       ) : (
         <div className="flex-1 flex items-center justify-center p-8">
           <button type="button" onClick={handleOpen}
