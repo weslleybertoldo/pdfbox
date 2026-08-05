@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
-  ArrowLeft, Bold, Check, Hand, Highlighter, Italic, List, Pencil, PenLine,
-  Share2, Type, Undo2, X, ZoomIn, ZoomOut,
+  ArrowLeft, Bold, BookOpen, Check, ChevronLeft, ChevronRight, Hand,
+  Highlighter, Italic, List, Pencil, PenLine, ScrollText, Share2, Type,
+  Undo2, X, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { toast } from "sonner";
 import { pickFiles, shareBlob, DOCX_MIME, isDocxFile } from "../lib/files";
@@ -86,6 +87,18 @@ const AnnotBtn = ({ label, active, disabled, onClick, children }: {
   </button>
 );
 
+// ── Modo livro ───────────────────────────────────────────────────────────────
+// UMA página por vez ocupando a área útil: swipe pra esquerda avança, pra
+// direita volta (1 dedo, movimento predominantemente horizontal, ≥60px).
+// Zoom (botões e pinch) re-renderiza a página na escala nova, com scroll
+// INTERNO do container quando ela fica maior que a tela. A escolha do modo
+// persiste em localStorage. Anotação FUNCIONA no modo livro (overlay na
+// página exibida); durante a anotação o swipe fica desligado (1 dedo é a
+// ferramenta) — a navegação é pelos botões ‹ › do indicador "X/Y".
+type ViewMode = "continuous" | "book";
+const VIEWER_MODE_KEY = "viewerMode";
+const SWIPE_MIN_PX = 60;
+
 const Viewer = () => {
   const [doc, setDoc] = useState<PdfDoc | null>(null);
   const [blob, setBlob] = useState<Blob | null>(null); // p/ compartilhar
@@ -95,14 +108,48 @@ const Viewer = () => {
   const [editing, setEditing] = useState(false); // modo docx: contentEditable ligado
   const [result, setResult] = useState<ResultFile[] | null>(null); // .docx salvo da edição
   const [zoom, setZoom] = useState(1);
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    localStorage.getItem(VIEWER_MODE_KEY) === "book" ? "book" : "continuous",
+  );
+  const [bookPage, setBookPage] = useState(1); // página atual do modo livro (1-based)
   const containerRef = useRef<HTMLDivElement>(null);
   const docxRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(zoom); // valor atual pro handler de pinch (efeito só depende de doc)
   const pendingScrollRef = useRef<number | null>(null); // scrollTop a aplicar após re-render de zoom
+  const pendingScrollPageRef = useRef<number | null>(null); // livro→contínuo: rolar até a página
+  const pendingBookScrollRef = useRef<{ left: number; top: number } | null>(null); // pinch no livro
   const location = useLocation();
   useEffect(() => {
     zoomRef.current = zoom;
   }, [zoom]);
+  const viewModeRef = useRef(viewMode);
+  viewModeRef.current = viewMode;
+  useEffect(() => {
+    localStorage.setItem(VIEWER_MODE_KEY, viewMode);
+  }, [viewMode]);
+
+  /** Toggle contínuo↔livro preservando a página atual. */
+  const toggleViewMode = () => {
+    if (viewMode === "continuous") {
+      // página mais visível no viewport vira a página do livro
+      const wrappers = containerRef.current?.querySelectorAll<HTMLElement>("[data-page]");
+      let best = 1;
+      let bestVis = -Infinity;
+      wrappers?.forEach((w) => {
+        const r = w.getBoundingClientRect();
+        const vis = Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0);
+        if (vis > bestVis) {
+          bestVis = vis;
+          best = Number(w.dataset.page) || 1;
+        }
+      });
+      setBookPage(best);
+      setViewMode("book");
+    } else {
+      pendingScrollPageRef.current = bookPage;
+      setViewMode("continuous");
+    }
+  };
 
   // ── estado do modo anotação (ver comentário acima do componente) ────────
   const [annotating, setAnnotating] = useState(false);
@@ -239,6 +286,7 @@ const Viewer = () => {
     setName(fileName);
     setBlob(b);
     setZoom(1);
+    setBookPage(1); // arquivo novo começa na 1ª página (modo livro persiste)
     setEditing(false);
     setResult(null);
     exitAnnotating(); // troca de arquivo descarta anotações em andamento
@@ -341,8 +389,9 @@ const Viewer = () => {
   // canvases longe (volta a placeholder com a mesma altura) — no máx MAX_LIVE
   // canvases vivos, senão PDF de 100+ páginas derruba a WebView.
   // Zoom/doc mudam → efeito re-roda: invalida tudo e re-observa.
+  // Modo livro tem efeito próprio (abaixo); este só roda no contínuo.
   useEffect(() => {
-    if (!doc || !containerRef.current) return;
+    if (!doc || viewMode !== "continuous" || !containerRef.current) return;
     const container = containerRef.current;
     container.innerHTML = "";
     let cancelled = false;
@@ -472,6 +521,19 @@ const Viewer = () => {
           wrappers.push(w);
           observer.observe(w);
         }
+        // alternância livro→contínuo: rola o documento até a página que
+        // estava aberta no livro (48 ≈ altura do header sticky)
+        if (pendingScrollPageRef.current !== null) {
+          const target = wrappers[pendingScrollPageRef.current - 1];
+          pendingScrollPageRef.current = null;
+          const scroller = document.scrollingElement;
+          if (target && scroller) {
+            scroller.scrollTop = Math.max(
+              0,
+              target.getBoundingClientRect().top + scroller.scrollTop - 48,
+            );
+          }
+        }
         // zoom via pinch: restaura a posição de scroll aproximada do ponto focal
         if (pendingScrollRef.current !== null) {
           const scroller = document.scrollingElement;
@@ -490,7 +552,153 @@ const Viewer = () => {
       observer.disconnect();
       for (const p of [...live.keys()]) discard(p); // libera canvases/text layers
     };
-  }, [doc, zoom]);
+  }, [doc, zoom, viewMode]);
+
+  // ── Render do modo livro: SÓ a página atual no DOM (canvas + text layer +
+  // overlay de anotação se anotando). O wrapper com margin:auto centraliza a
+  // página quando menor que a área útil; maior (zoom) → scroll interno do
+  // container. Zoom/página mudam → re-render na escala nova.
+  useEffect(() => {
+    if (!doc || viewMode !== "book" || !containerRef.current) return;
+    const container = containerRef.current;
+    container.replaceChildren(); // limpa o conteúdo do outro modo/página
+    let cancelled = false;
+    let livePage: { canvas: HTMLCanvasElement; text: { cancel: () => void } } | null = null;
+    const baseW = container.clientWidth - 16;
+    const dpr = window.devicePixelRatio || 1;
+    (async () => {
+      try {
+        const page = await doc.getPage(bookPage);
+        const scale = (baseW / page.getViewport({ scale: 1 }).width) * zoom;
+        const viewport = page.getViewport({ scale });
+        const canvas = await renderPage(doc, bookPage, scale, { dpr });
+        if (cancelled) {
+          canvas.width = 0;
+          canvas.height = 0;
+          return;
+        }
+        // mesma estrutura do contínuo: box (canvas + textLayer) com os
+        // metadados que o modo anotação usa pra recriar o overlay
+        const box = document.createElement("div");
+        box.className = "relative rounded shadow overflow-hidden";
+        box.style.width = `${viewport.width}px`;
+        box.style.height = `${viewport.height}px`;
+        box.dataset.annotBox = String(bookPage);
+        box.dataset.scale = String(scale);
+        canvas.className = "block";
+        const textDiv = document.createElement("div");
+        textDiv.className = "textLayer";
+        box.append(canvas, textDiv);
+        const text = renderTextLayer(page, textDiv, viewport);
+        const wrapper = document.createElement("div");
+        wrapper.dataset.page = String(bookPage);
+        wrapper.className = "m-auto shrink-0"; // flex + margin:auto: centraliza E rola certo
+        wrapper.appendChild(box);
+        container.replaceChildren(wrapper);
+        livePage = { canvas, text };
+        if (annotatingRef.current) ensureOverlay(box);
+        if (pendingBookScrollRef.current) {
+          // pinch: restaura o ponto focal aproximado no scroll interno
+          container.scrollLeft = pendingBookScrollRef.current.left;
+          container.scrollTop = pendingBookScrollRef.current.top;
+          pendingBookScrollRef.current = null;
+        } else {
+          container.scrollTop = 0; // página nova começa no topo
+          container.scrollLeft = 0;
+        }
+        await text.promise.catch(() => {});
+      } catch (e) {
+        if (cancelled) return;
+        console.error(e);
+        toast.error("Erro ao renderizar PDF");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (livePage) {
+        livePage.text.cancel();
+        livePage.canvas.width = 0; // libera o backing store imediatamente
+        livePage.canvas.height = 0;
+      }
+      container.replaceChildren();
+    };
+  }, [doc, zoom, viewMode, bookPage]);
+
+  // ── Swipe do modo livro: 1 dedo, movimento predominantemente horizontal e
+  // ≥ SWIPE_MIN_PX navega. NÃO conflita com: pinch (2º pointer invalida o
+  // gesto), seleção de texto (seleção ativa → ignora), pan interno da página
+  // com zoom (há overflow horizontal → só navega se o scroll já está na borda)
+  // e anotação (swipe desligado — 1 dedo é a ferramenta; navegação pelos ‹ ›).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!doc || viewMode !== "book" || !el) return;
+    const numPages = doc.numPages;
+    let start: { id: number; x: number; y: number } | null = null;
+    let multi = false; // um 2º pointer entrou no meio do gesto (pinch)
+    let horizLock: boolean | null = null; // decidido no 1º move além do slop
+
+    const atHorizEdge = (dx: number) => {
+      const maxLeft = el.scrollWidth - el.clientWidth;
+      if (maxLeft <= 1) return true; // sem overflow horizontal
+      return dx < 0 ? el.scrollLeft >= maxLeft - 1 : el.scrollLeft <= 1;
+    };
+    const hasSelection = () => {
+      const sel = window.getSelection();
+      return Boolean(sel && !sel.isCollapsed);
+    };
+
+    const onDown = (e: PointerEvent) => {
+      if (annotatingRef.current) return;
+      if (start) {
+        multi = true;
+        return;
+      }
+      start = { id: e.pointerId, x: e.clientX, y: e.clientY };
+      multi = false;
+      horizLock = null;
+    };
+    const onUp = (e: PointerEvent) => {
+      if (!start || e.pointerId !== start.id) return;
+      const dx = e.clientX - start.x;
+      const dy = e.clientY - start.y;
+      const wasMulti = multi;
+      start = null;
+      horizLock = null;
+      if (wasMulti) return;
+      if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) <= Math.abs(dy)) return;
+      if (hasSelection() || !atHorizEdge(dx)) return;
+      setBookPage((p) => (dx < 0 ? Math.min(numPages, p + 1) : Math.max(1, p - 1)));
+    };
+    const onCancel = (e: PointerEvent) => {
+      if (start && e.pointerId === start.id) {
+        start = null;
+        horizLock = null;
+      }
+    };
+    // gesto horizontal "trava" o touchmove (senão o scroll nativo assume e
+    // dispara pointercancel antes do pointerup medir o deltaX do swipe)
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 1 || !start || multi || annotatingRef.current) return;
+      const t = e.touches[0];
+      const dx = t.clientX - start.x;
+      const dy = t.clientY - start.y;
+      if (horizLock === null && Math.hypot(dx, dy) > 10) {
+        horizLock = Math.abs(dx) > Math.abs(dy) && atHorizEdge(dx) && !hasSelection();
+      }
+      if (horizLock) e.preventDefault();
+    };
+
+    el.addEventListener("pointerdown", onDown);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    return () => {
+      el.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      el.removeEventListener("touchmove", onTouchMove);
+    };
+  }, [doc, viewMode]);
 
   // Entrar no modo anotação: overlay nas páginas já vivas (as novas ganham o
   // seu no pump). Sair: remove todos (as anotações já foram descartadas).
@@ -535,7 +743,7 @@ const Viewer = () => {
   useEffect(() => {
     setTextDraft(null);
     setTextValue("");
-  }, [zoom]);
+  }, [zoom, viewMode, bookPage]);
 
   // Gestos do modo anotação (delegação no container; move/up na window pra não
   // perder o traço quando o dedo sai da página). 1 pointer = ferramenta; um 2º
@@ -695,6 +903,9 @@ const Viewer = () => {
     let startMid = { x: 0, y: 0 };
     let startScrollTop = 0;
     let startOffsetTop = 0; // topo do container em coordenadas do documento
+    // modo livro: o scroll que importa é o INTERNO do container
+    let startElScroll = { left: 0, top: 0 };
+    let startRect = { left: 0, top: 0 };
 
     const dist = () => {
       const [a, b] = [...pointers.values()];
@@ -719,6 +930,8 @@ const Viewer = () => {
       startScrollTop = scroller?.scrollTop ?? 0;
       const rect = el.getBoundingClientRect();
       startOffsetTop = rect.top + startScrollTop;
+      startElScroll = { left: el.scrollLeft, top: el.scrollTop };
+      startRect = { left: rect.left, top: rect.top };
       el.style.transformOrigin = `${startMid.x - rect.left}px ${startMid.y - rect.top}px`;
     };
     const onMove = (e: PointerEvent) => {
@@ -736,12 +949,22 @@ const Viewer = () => {
       clearTransform();
       const newZoom = Math.min(3, Math.max(0.5, startZoom * g));
       if (Math.abs(newZoom - startZoom) < 0.01) return;
-      // scrollTop' ≈ (scrollTop + focoY - topoContainer)*ratio + topoContainer - focoY
       const ratio = newZoom / startZoom;
-      pendingScrollRef.current = Math.max(
-        0,
-        (startScrollTop + startMid.y - startOffsetTop) * ratio + startOffsetTop - startMid.y,
-      );
+      if (viewModeRef.current === "book") {
+        // modo livro: restaura o foco no scroll INTERNO do container
+        const fx = startMid.x - startRect.left;
+        const fy = startMid.y - startRect.top;
+        pendingBookScrollRef.current = {
+          left: Math.max(0, (startElScroll.left + fx) * ratio - fx),
+          top: Math.max(0, (startElScroll.top + fy) * ratio - fy),
+        };
+      } else {
+        // scrollTop' ≈ (scrollTop + focoY - topoContainer)*ratio + topoContainer - focoY
+        pendingScrollRef.current = Math.max(
+          0,
+          (startScrollTop + startMid.y - startOffsetTop) * ratio + startOffsetTop - startMid.y,
+        );
+      }
       setZoom(newZoom); // mesmo fluxo do botão: efeito de render re-roda na nova escala
     };
     const onCancel = (e: PointerEvent) => {
@@ -773,13 +996,26 @@ const Viewer = () => {
   }, [doc, annotating]);
 
   const hasContent = Boolean(doc || imgUrl || docxHtml);
+  // layout do modo livro: raiz presa à altura da tela (sem scroll do documento);
+  // o scroll vira interno do container da página
+  const bookLayout = Boolean(doc) && viewMode === "book";
 
   return (
-    <div className="min-h-full flex flex-col">
+    <div className={bookLayout ? "h-full flex flex-col overflow-hidden" : "min-h-full flex flex-col"}>
       <header className="bg-slate-900 sticky top-0 z-10">
         <div className="flex items-center gap-3 p-3">
           <Link to="/"><ArrowLeft size={18} /></Link>
           <span className="flex-1 text-sm truncate">{name ?? "Visualizar"}</span>
+          {doc && (
+            <button
+              type="button"
+              aria-label={viewMode === "book" ? "Modo contínuo" : "Modo livro"}
+              title={viewMode === "book" ? "Modo contínuo" : "Modo livro"}
+              onClick={toggleViewMode}
+            >
+              {viewMode === "book" ? <ScrollText size={18} /> : <BookOpen size={18} />}
+            </button>
+          )}
           {(doc || imgUrl) && (
             <>
               <button type="button" aria-label="Diminuir zoom"
@@ -906,15 +1142,47 @@ const Viewer = () => {
       ) : doc ? (
         // wrapper relativo: ancora a caixa de texto flutuante (que rola junto
         // com o conteúdo) sem tocar no container imperativo da virtualização
-        <div key="pdf" ref={pdfWrapRef} className="relative flex-1 flex flex-col">
+        <div
+          key="pdf"
+          ref={pdfWrapRef}
+          className={`relative flex-1 flex flex-col ${bookLayout ? "min-h-0" : ""}`}
+        >
           {result && !annotating && (
             <div className="p-3 pb-0"><ResultPanel files={result} /></div>
           )}
+          {/* modo livro: display:flex + min-h-0 → filho m-auto centraliza a
+              página e o overflow interno rola certo quando ela é maior */}
           <div
             ref={containerRef}
-            className="flex-1 overflow-auto p-2"
+            className={`flex-1 overflow-auto p-2 ${bookLayout ? "min-h-0 flex" : ""}`}
             style={{ touchAction: "pan-x pan-y" }}
           />
+          {bookLayout && (
+            <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-0.5 bg-slate-900/90 border border-slate-700 rounded-full px-1.5 py-1 shadow-lg">
+              <button
+                type="button"
+                aria-label="Página anterior"
+                disabled={bookPage <= 1}
+                onClick={() => setBookPage((p) => Math.max(1, p - 1))}
+                className={`p-1 ${bookPage <= 1 ? "opacity-40" : ""}`}
+              >
+                <ChevronLeft size={16} />
+              </button>
+              <span data-book-indicator="" className="text-xs tabular-nums px-1"
+                aria-label={`Página ${bookPage} de ${doc.numPages}`}>
+                {bookPage}/{doc.numPages}
+              </span>
+              <button
+                type="button"
+                aria-label="Próxima página"
+                disabled={bookPage >= doc.numPages}
+                onClick={() => setBookPage((p) => Math.min(doc.numPages, p + 1))}
+                className={`p-1 ${bookPage >= doc.numPages ? "opacity-40" : ""}`}
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          )}
           {textDraft && (
             <div
               className="absolute z-20 flex items-center gap-1 bg-slate-900/95 border border-slate-600 rounded-lg p-1 shadow-lg"
