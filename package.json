@@ -19,6 +19,7 @@
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/share": "^8.0.1",
     "browser-image-compression": "^2.0.2",
+    "core-js": "^3.50.0",
     "docx": "^9.7.1",
     "html2canvas": "^1.4.1",
     "lucide-react": "^1.28.0",

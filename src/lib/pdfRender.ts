@@ -1,4 +1,9 @@
 import * as pdfjs from "pdfjs-dist";
+// Asset cru do pdfjs-dist (bundle local, sem CDN). Os polyfills core-js pro
+// worker (thread separada) são injetados por CONCATENAÇÃO no build, via
+// plugin `pdfWorkerPolyfillPlugin` em vite.config.ts — ver lá o porquê de
+// não dar pra usar o `?worker&url` do Vite pra isso (ele descarta o export
+// que o pdf.js precisa no fallback "fake worker").
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl; // bundle local, sem CDN
