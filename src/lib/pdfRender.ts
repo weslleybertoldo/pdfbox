@@ -64,12 +64,136 @@ export async function renderPage(
   return canvas;
 }
 
+// ── Seleção estável por arrasto (replica o TextLayerBuilder do viewer oficial
+// do pdf.js — web/text_layer_builder.js). Sem isso, arrastar a alça/mouse por
+// um VÃO sem texto (entre linhas, margens) faz o browser "pular" a fronteira
+// da seleção pro span absoluto que ele considera mais próximo — selecionando
+// trechos que o usuário nunca tocou (bug visto no device). O `endOfContent` é
+// um div user-select:none no fim do layer que, durante a seleção (classe
+// `selecting`), expande pra cobrir a página inteira SOB os spans (z-index 0):
+// o ponteiro num vão ancora nele e a seleção para no último texto real.
+// CSS correspondente em index.css (.endOfContent / .textLayer.selecting).
+// Registro global textLayer→endOfContent: os listeners de documento existem
+// uma única vez enquanto houver text layer vivo (a virtualização do viewer
+// remove cada layer via cancel()).
+const textLayers = new Map<HTMLElement, HTMLElement>();
+let selectionAC: AbortController | null = null;
+
+function unregisterTextLayer(div: HTMLElement): void {
+  textLayers.delete(div);
+  if (textLayers.size === 0) {
+    selectionAC?.abort();
+    selectionAC = null;
+  }
+}
+
+/** Volta o endOfContent pro fim do layer e encerra o estado de seleção. */
+function resetEndOfContent(end: HTMLElement, layer: HTMLElement): void {
+  layer.append(end);
+  end.style.width = "";
+  end.style.height = "";
+  layer.classList.remove("selecting");
+}
+
+/** Firefox e Chromium ≥ 148 estendem seleção entre spans absolutos direito;
+ *  abaixo disso (WebView Android real) precisa do hack do viewer oficial que
+ *  move o endOfContent (user-select:text) pra junto da âncora da seleção. */
+function detectFirefoxOrModernChromium(layer: HTMLElement): boolean {
+  if (getComputedStyle(layer).getPropertyValue("-moz-user-select") === "none") {
+    return true; // Firefox
+  }
+  const uaData = (
+    navigator as Navigator & {
+      userAgentData?: { brands: { brand: string; version: string }[] };
+    }
+  ).userAgentData;
+  const chromiumVersion = uaData
+    ? uaData.brands.find(({ brand }) => brand === "Chromium")?.version
+    : /\bChrome\/(\d+)\b/.exec(navigator.userAgent)?.[1];
+  return !!chromiumVersion && parseInt(chromiumVersion, 10) >= 148;
+}
+
+function enableGlobalSelectionListeners(): void {
+  if (selectionAC) return;
+  selectionAC = new AbortController();
+  const { signal } = selectionAC;
+  let isPointerDown = false;
+  const resetAll = () => textLayers.forEach(resetEndOfContent);
+  document.addEventListener("pointerdown", () => {
+    isPointerDown = true;
+  }, { signal });
+  document.addEventListener("pointerup", () => {
+    isPointerDown = false;
+    resetAll();
+  }, { signal });
+  window.addEventListener("blur", () => {
+    isPointerDown = false;
+    resetAll();
+  }, { signal });
+  document.addEventListener("keyup", () => {
+    if (!isPointerDown) resetAll();
+  }, { signal });
+
+  let modernSelection: boolean | undefined; // lazy: precisa de um layer no DOM
+  let prevRange: Range | undefined;
+  document.addEventListener("selectionchange", () => {
+    const selection = document.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      resetAll();
+      return;
+    }
+    // layers tocados pela seleção entram em "selecting"; os demais resetam
+    const active = new Set<HTMLElement>();
+    for (let i = 0; i < selection.rangeCount; i++) {
+      const range = selection.getRangeAt(i);
+      for (const layer of textLayers.keys()) {
+        if (!active.has(layer) && range.intersectsNode(layer)) active.add(layer);
+      }
+    }
+    for (const [layer, end] of textLayers) {
+      if (active.has(layer)) layer.classList.add("selecting");
+      else resetEndOfContent(end, layer);
+    }
+
+    modernSelection ??= detectFirefoxOrModernChromium(
+      textLayers.keys().next().value as HTMLElement,
+    );
+    if (modernSelection) return;
+    // Chromium < 148: reposiciona o endOfContent junto à âncora "viva" da
+    // seleção (mesma lógica do TextLayerBuilder oficial) pra extensão por
+    // arrasto não saltar entre spans
+    const range = selection.getRangeAt(0);
+    const modifyStart =
+      prevRange &&
+      (range.compareBoundaryPoints(Range.END_TO_END, prevRange) === 0 ||
+        range.compareBoundaryPoints(Range.START_TO_END, prevRange) === 0);
+    let anchor: Node | null = modifyStart ? range.startContainer : range.endContainer;
+    if (anchor.nodeType === Node.TEXT_NODE) anchor = anchor.parentNode;
+    if (!modifyStart && range.endOffset === 0) {
+      do {
+        while (anchor && !anchor.previousSibling) anchor = anchor.parentNode;
+        anchor = anchor?.previousSibling ?? null;
+      } while (anchor && !anchor.childNodes.length);
+    }
+    const parentTextLayer = anchor?.parentElement?.closest<HTMLElement>(".textLayer");
+    const endDiv = parentTextLayer ? textLayers.get(parentTextLayer) : undefined;
+    if (endDiv && parentTextLayer && anchor?.parentElement) {
+      endDiv.style.width = parentTextLayer.style.width;
+      endDiv.style.height = parentTextLayer.style.height;
+      endDiv.style.userSelect = "text";
+      anchor.parentElement.insertBefore(endDiv, modifyStart ? anchor : anchor.nextSibling);
+    }
+    prevRange = range.cloneRange();
+  }, { signal });
+}
+
 /**
  * Text layer (seleção/cópia de texto): spans transparentes posicionados sobre
  * o canvas da página. `container` deve ser um `.textLayer` (CSS em index.css)
  * absoluto sobre o canvas, e `viewport` a MESMA viewport CSS do canvas (escala
  * lógica, SEM devicePixelRatio) — `--scale-factor` com DPR desalinharia o texto.
- * Retorna handle com cancel() pro descarte da virtualização.
+ * Retorna handle com cancel() pro descarte da virtualização (também remove o
+ * layer do registro de seleção global).
  */
 export function renderTextLayer(
   page: pdfjs.PDFPageProxy,
@@ -83,7 +207,22 @@ export function renderTextLayer(
     container,
     viewport,
   });
-  return { promise: layer.render(), cancel: () => layer.cancel() };
+  const promise = layer.render().then(() => {
+    // endOfContent DEPOIS dos spans (mesma ordem do TextLayerBuilder oficial)
+    const end = document.createElement("div");
+    end.className = "endOfContent";
+    container.append(end);
+    container.addEventListener("mousedown", () => container.classList.add("selecting"));
+    textLayers.set(container, end);
+    enableGlobalSelectionListeners();
+  });
+  return {
+    promise,
+    cancel: () => {
+      layer.cancel();
+      unregisterTextLayer(container);
+    },
+  };
 }
 
 /** Miniaturas (~140px de largura) para o PageGrid. */

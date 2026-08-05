@@ -73,3 +73,21 @@ body { @apply bg-slate-950 text-slate-100 antialiased; }
 .textLayer .markedContent { display: contents; }
 .textLayer span[role="img"] { user-select: none; cursor: default; }
 .textLayer ::selection { background: rgb(37 99 235 / 0.45); }
+.textLayer br::selection { background: transparent; }
+
+/* endOfContent (viewer oficial): div user-select:none no fim do layer que,
+   durante a seleção (.selecting, ligada pelos listeners em pdfRender.ts),
+   cobre a página inteira SOB os spans (z-index 0 vs 1) — o ponteiro num vão
+   sem texto ancora nele em vez de "pular" a seleção pro span mais próximo.
+   PRECISA vir depois da regra `> :not(.markedContent)` (mesma especificidade)
+   pra vencer o z-index. */
+.textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.textLayer.selecting .endOfContent { top: 0; }
