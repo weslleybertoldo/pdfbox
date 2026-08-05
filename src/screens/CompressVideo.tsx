@@ -24,6 +24,7 @@ const CompressVideo = () => {
   const [mode, setMode] = useState<CompressMode>("media");
   const [progress, setProgress] = useState<number | null>(null);
   const [result, setResult] = useState<CompressedVideo | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const handlePick = async () => {
     setResult(null);
@@ -39,20 +40,28 @@ const CompressVideo = () => {
   };
 
   const handleSave = async () => {
-    if (!result) return;
+    if (!result || busy) return;
+    setBusy(true);
     try {
       await saveFileFromPath(result.path, `video-comprimido-${Date.now()}.mp4`, "video/mp4", "video");
       toast.success("Vídeo salvo");
     } catch (e) {
       toast.error(`Falha ao salvar: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setBusy(false);
     }
   };
 
   const handleShare = async () => {
-    if (!result) return;
+    if (!result || busy) return;
+    setBusy(true);
     try {
       await shareCompressedVideo(result.path);
-    } catch { /* usuário fechou a share sheet */ }
+    } catch {
+      /* usuário fechou a share sheet */
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -89,12 +98,12 @@ const CompressVideo = () => {
               : formatBytes(result.outputSize)}
           </p>
           <div className="flex gap-2">
-            <button type="button" onClick={handleSave}
-              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-600 rounded-lg text-sm">
+            <button type="button" onClick={handleSave} disabled={busy}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-600 rounded-lg text-sm disabled:opacity-40">
               <Download size={16} /> Salvar
             </button>
-            <button type="button" onClick={handleShare}
-              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-700 rounded-lg text-sm">
+            <button type="button" onClick={handleShare} disabled={busy}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-700 rounded-lg text-sm disabled:opacity-40">
               <Share2 size={16} /> Compartilhar
             </button>
           </div>

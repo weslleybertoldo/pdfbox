@@ -36,14 +36,21 @@ const Viewer = () => {
     container.innerHTML = "";
     let cancelled = false;
     (async () => {
-      const baseW = container.clientWidth - 16;
-      for (let p = 1; p <= doc.numPages; p++) {
+      try {
+        const baseW = container.clientWidth - 16;
+        for (let p = 1; p <= doc.numPages; p++) {
+          if (cancelled) return;
+          const page = await doc.getPage(p);
+          const scale = (baseW / page.getViewport({ scale: 1 }).width) * zoom;
+          const canvas = await renderPage(doc, p, scale);
+          canvas.className = "mx-auto mb-2 rounded shadow max-w-none";
+          if (!cancelled) container.appendChild(canvas);
+        }
+      } catch (e) {
+        // doc destruído/trocado no meio do render (troca legítima) → silencia
         if (cancelled) return;
-        const page = await doc.getPage(p);
-        const scale = (baseW / page.getViewport({ scale: 1 }).width) * zoom;
-        const canvas = await renderPage(doc, p, scale);
-        canvas.className = "mx-auto mb-2 rounded shadow max-w-none";
-        if (!cancelled) container.appendChild(canvas);
+        console.error(e);
+        toast.error("Erro ao renderizar PDF");
       }
     })();
     return () => { cancelled = true; };

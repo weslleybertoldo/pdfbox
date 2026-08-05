@@ -3,6 +3,9 @@ import { Directory, Filesystem } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { blobToBase64 } from "./mediaSaver";
 
+/** accept de imagem padrão para pickFiles (conversão e compressão de imagem). */
+export const IMG_ACCEPT = "image/png,image/jpeg,image/webp";
+
 /** Abre o file picker e devolve os arquivos escolhidos. */
 export function pickFiles(accept: string, multiple = false): Promise<File[]> {
   return new Promise((resolve) => {

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
-import { pickFiles } from "../lib/files";
+import { pickFiles, IMG_ACCEPT } from "../lib/files";
 import { compressImage, type CompressMode } from "../lib/convert/compress";
 
 const MODES: { id: CompressMode; label: string; desc: string }[] = [
@@ -12,7 +12,6 @@ const MODES: { id: CompressMode; label: string; desc: string }[] = [
   { id: "forte", label: "Forte", desc: "Máxima redução" },
 ];
 
-const IMG_ACCEPT = "image/png,image/jpeg,image/webp";
 const baseName = (f: File) => f.name.replace(/\.[^.]+$/, "");
 
 const CompressImage = () => {

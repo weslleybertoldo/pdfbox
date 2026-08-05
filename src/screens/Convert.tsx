@@ -4,7 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import ProgressBar from "../components/ProgressBar";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
-import { pickFiles, readFileAsBytes } from "../lib/files";
+import { pickFiles, readFileAsBytes, IMG_ACCEPT } from "../lib/files";
 import { pdfToImages } from "../lib/convert/pdfToImages";
 import { imagesToPdf } from "../lib/convert/imagesToPdf";
 import { pdfToDocx } from "../lib/convert/pdfToDocx";
@@ -15,7 +15,6 @@ import { xlsxToPdf, xlsxToImages } from "../lib/convert/xlsxPipeline";
 
 type Fmt = "png" | "jpg";
 const baseName = (f: File) => f.name.replace(/\.[^.]+$/, "");
-const IMG_ACCEPT = "image/png,image/jpeg,image/webp";
 
 interface ActionCfg {
   title: string;
