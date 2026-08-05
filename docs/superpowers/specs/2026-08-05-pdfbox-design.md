@@ -28,16 +28,20 @@ Clone do padrão PhysiqCalc/NutriTrack:
 
 ### 2. Conversões (matriz completa)
 
+**"Imagem" = PNG e JPG/JPEG** (WebP aceito como entrada). Na saída de imagem o usuário escolhe PNG ou JPG.
+
 | De → Para | Pipeline | Observação |
 |---|---|---|
-| PDF → PNG | pdf.js renderiza página → canvas → PNG | Todas as páginas ou seleção; salva na galeria (MediaStore) |
+| PDF → Imagem | pdf.js renderiza página → canvas → PNG/JPG | Todas as páginas ou seleção; salva na galeria (MediaStore) |
 | PDF → Word (.docx) | pdf.js `getTextContent` + extração de imagens → lib `docx` | Texto + imagens; layout complexo (colunas/tabelas) degrada — limitação aceita |
-| PNG → PDF | pdf-lib embute a imagem em página | Múltiplas PNGs = múltiplas páginas em 1 PDF |
-| PNG → Word (.docx) | **OCR Tesseract.js** offline → texto editável → lib `docx` | traineddata `por`+`eng` empacotados no APK (~+15MB) |
+| Imagem → PDF | pdf-lib embute a imagem em página | Múltiplas imagens = múltiplas páginas em 1 PDF |
+| Imagem → Word (.docx) | **OCR Tesseract.js** offline → texto editável → lib `docx` | traineddata `por`+`eng` empacotados no APK (~+15MB) |
 | Word (.docx) → PDF | mammoth (.docx→HTML) → render offscreen → html2canvas → pdf-lib | Visual fiel; texto do PDF não selecionável (páginas viram imagem) |
-| Word (.docx) → PNG | mesmo pipeline, cada página → PNG | Salva na galeria |
+| Word (.docx) → Imagem | mesmo pipeline, cada página → PNG/JPG | Salva na galeria |
+| HTML → PDF / Imagem | render do .html em iframe offscreen sandboxed → html2canvas → pdf-lib ou PNG/JPG | HTML local (arquivo); recursos externos não carregam (offline) |
+| Excel (.xlsx) → PDF / Imagem | SheetJS lê a planilha → tabela HTML → mesmo pipeline de render | Uma aba por página; fórmulas viram valor calculado salvo |
 
-- Escopo: só `.docx` (não suporta `.doc` legado)
+- Escopo: só `.docx` e `.xlsx` (não suporta `.doc`/`.xls` legados)
 - Todas as libs empacotadas no bundle (zero CDN/rede)
 
 ### 2b. Compressão (offline)
@@ -45,9 +49,21 @@ Clone do padrão PhysiqCalc/NutriTrack:
 | Alvo | Pipeline | Modos |
 |---|---|---|
 | Comprimir PDF | **Leve**: re-save com pdf-lib (object streams, mantém texto selecionável). **Forte**: pdf.js re-renderiza páginas → JPEG com qualidade escolhida → pdf-lib remonta (reduz muito, perde texto selecionável) | Leve / Média / Forte |
-| Comprimir PNG | `browser-image-compression` (web worker, offline): redução de dimensão e/ou re-encode com qualidade; saída PNG ou JPEG (escolha do usuário) | Leve / Média / Forte |
+| Comprimir Imagem (PNG/JPG) | `browser-image-compression` (web worker, offline): redução de dimensão e/ou re-encode com qualidade; saída PNG ou JPG (escolha do usuário) | Leve / Média / Forte |
 
 - UI mostra tamanho antes → depois do resultado antes de salvar
+
+### 2c. Juntar PDFs
+
+- 2+ PDFs → 1 PDF único (ex.: 3 páginas + 5 páginas = 8 páginas)
+- pdf-lib `copyPages`: preserva conteúdo original sem re-render
+- Usuário adiciona os arquivos e reordena a sequência antes de juntar
+
+### 2d. Digitalizar (câmera → PDF)
+
+- `@capacitor/camera`: tira 1+ fotos em sequência → cada foto vira uma página → 1 PDF
+- Preview com opção de refazer/remover foto antes de gerar
+- v1 sem detecção automática de borda/perspectiva (foto entra como está)
 
 ### 3. Arquivos
 - Entrada: file picker (`<input type="file">` / Capacitor Filesystem)
@@ -64,7 +80,7 @@ Clone do padrão PhysiqCalc/NutriTrack:
 
 ## UI (uma tela + viewer)
 
-- Home: grid de ações (8 cards: 6 conversões + Comprimir PDF + Comprimir PNG) + botão "Abrir PDF" (viewer)
+- Home: grid de ações — conversões (PDF/Word/Imagem/HTML/Excel), Comprimir PDF, Comprimir Imagem, Juntar PDFs, Digitalizar — + botão "Abrir PDF" (viewer)
 - Fluxo de conversão: escolher arquivo → opções mínimas (páginas, se aplicável) → progresso → resultado com "Salvar"/"Compartilhar"
 - Rodapé fixo na Home com versão + verificar atualizações
 
@@ -81,4 +97,6 @@ Clone do padrão PhysiqCalc/NutriTrack:
 
 ## Fora de escopo (YAGNI)
 
-- `.doc` legado, XLSX/PPTX, edição de PDF, senha/criptografia, iOS, Play Store
+- `.doc`/`.xls` legados, PPTX, edição de PDF, senha/criptografia, iOS, Play Store
+- PDF→Excel e PDF→HTML (extração de tabela/estrutura offline não é confiável)
+- Detecção automática de borda no scan (avaliar em v2)
