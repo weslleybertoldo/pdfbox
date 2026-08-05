@@ -59,7 +59,17 @@ Clone do padrão PhysiqCalc/NutriTrack:
 - pdf-lib `copyPages`: preserva conteúdo original sem re-render
 - Usuário adiciona os arquivos e reordena a sequência antes de juntar
 
-### 2d. Digitalizar (câmera → PDF)
+### 2d. Dividir PDF
+
+- Seleciona página(s) num grid de miniaturas (pdf.js) → gera **2 PDFs**: um com as páginas selecionadas, outro com as restantes (ex.: 10 páginas, separa a 5 → PDF de 1 página + PDF de 9)
+- pdf-lib `copyPages`, sem re-render
+
+### 2e. Remover páginas
+
+- Seleciona no grid de miniaturas **quais páginas MANTER** → gera 1 PDF só com elas (as demais saem)
+- Mesmo grid/pipeline do Dividir, saída única
+
+### 2f. Digitalizar (câmera → PDF)
 
 - `@capacitor/camera`: tira 1+ fotos em sequência → cada foto vira uma página → 1 PDF
 - Preview com opção de refazer/remover foto antes de gerar
@@ -80,7 +90,7 @@ Clone do padrão PhysiqCalc/NutriTrack:
 
 ## UI (uma tela + viewer)
 
-- Home: grid de ações — conversões (PDF/Word/Imagem/HTML/Excel), Comprimir PDF, Comprimir Imagem, Juntar PDFs, Digitalizar — + botão "Abrir PDF" (viewer)
+- Home: grid de ações — conversões (PDF/Word/Imagem/HTML/Excel), Comprimir PDF, Comprimir Imagem, Juntar PDFs, Dividir PDF, Remover páginas, Digitalizar — + botão "Abrir PDF" (viewer)
 - Fluxo de conversão: escolher arquivo → opções mínimas (páginas, se aplicável) → progresso → resultado com "Salvar"/"Compartilhar"
 - Rodapé fixo na Home com versão + verificar atualizações
 
