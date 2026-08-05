@@ -1,7 +1,9 @@
-import { Download, Share2 } from "lucide-react";
+import { Download, Eye, Share2 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { saveToDevice } from "../lib/mediaSaver";
 import { shareBlob, formatBytes } from "../lib/files";
+import { setOpenFile } from "../lib/openFileStore";
 
 export interface ResultFile {
   blob: Blob;
@@ -9,8 +11,13 @@ export interface ResultFile {
   collection: "downloads" | "images" | "video";
 }
 
+/** O viewer só renderiza PDF e imagem — docx/xlsx não ganham "Visualizar". */
+const isViewable = (f: ResultFile) =>
+  f.blob.type === "application/pdf" || f.blob.type.startsWith("image/");
+
 /** sizeBefore: mostra "antes → depois" (compressões). */
 const ResultPanel = ({ files, sizeBefore }: { files: ResultFile[]; sizeBefore?: number }) => {
+  const navigate = useNavigate();
   const total = files.reduce((s, f) => s + f.blob.size, 0);
 
   const handleSave = async () => {
@@ -32,6 +39,20 @@ const ResultPanel = ({ files, sizeBefore }: { files: ResultFile[]; sizeBefore?: 
       for (const f of files) await shareBlob(f.blob, f.name);
     } catch { /* usuário fechou a share sheet */ }
   };
+  // múltiplos arquivos: visualiza o primeiro (v1 — simples)
+  const handleView = async () => {
+    const f = files[0];
+    try {
+      setOpenFile({
+        bytes: new Uint8Array(await f.blob.arrayBuffer()),
+        name: f.name,
+        mimeType: f.blob.type,
+      });
+      navigate("/viewer");
+    } catch (e) {
+      toast.error(`Erro ao visualizar: ${e instanceof Error ? e.message : e}`);
+    }
+  };
 
   return (
     <div className="bg-slate-900 border border-green-800/50 rounded-xl p-4 space-y-3">
@@ -50,6 +71,12 @@ const ResultPanel = ({ files, sizeBefore }: { files: ResultFile[]; sizeBefore?: 
           className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-700 rounded-lg text-sm">
           <Share2 size={16} /> Compartilhar
         </button>
+        {isViewable(files[0]) && (
+          <button type="button" onClick={handleView}
+            className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-700 rounded-lg text-sm">
+            <Eye size={16} /> Visualizar
+          </button>
+        )}
       </div>
     </div>
   );

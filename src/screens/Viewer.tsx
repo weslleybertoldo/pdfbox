@@ -1,26 +1,58 @@
 import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { ArrowLeft, Share2, ZoomIn, ZoomOut } from "lucide-react";
 import { toast } from "sonner";
 import { pickFiles, shareBlob } from "../lib/files";
 import { loadPdf, renderPage, destroyPdf, type PdfDoc } from "../lib/pdfRender";
+import { consumeOpenFile } from "../lib/openFileStore";
 
 const Viewer = () => {
   const [doc, setDoc] = useState<PdfDoc | null>(null);
-  const [file, setFile] = useState<File | null>(null);
+  const [blob, setBlob] = useState<Blob | null>(null); // p/ compartilhar
+  const [name, setName] = useState<string | null>(null);
+  const [imgUrl, setImgUrl] = useState<string | null>(null); // modo imagem
   const [zoom, setZoom] = useState(1);
   const containerRef = useRef<HTMLDivElement>(null);
+  const location = useLocation();
+
+  /** Abre bytes de qualquer origem (picker, intent externo, ResultPanel). */
+  const openBytes = async (bytes: Uint8Array, fileName: string, mimeType: string) => {
+    // .slice() garante Uint8Array<ArrayBuffer> (BlobPart) e evita o detach
+    // do buffer pelo worker do pdf.js (loadPdf também copia internamente)
+    const b = new Blob([bytes.slice()], { type: mimeType });
+    setName(fileName);
+    setBlob(b);
+    setZoom(1);
+    if (mimeType.startsWith("image/")) {
+      setDoc(null);
+      setImgUrl(URL.createObjectURL(b));
+    } else {
+      setImgUrl(null);
+      setDoc(await loadPdf(bytes));
+    }
+  };
 
   const handleOpen = async () => {
     const [f] = await pickFiles("application/pdf");
     if (!f) return;
     try {
-      setFile(f);
-      setDoc(await loadPdf(new Uint8Array(await f.arrayBuffer())));
+      await openBytes(new Uint8Array(await f.arrayBuffer()), f.name, "application/pdf");
     } catch (e) {
       toast.error(`Erro ao abrir: ${e instanceof Error ? e.message : e}`);
     }
   };
+
+  // Arquivo vindo de fora (ACTION_VIEW ou botão Visualizar) — consumido do
+  // store no mount E a cada navigate pro viewer (location.key muda mesmo
+  // quando a rota é a mesma, ex.: novo intent com o viewer já aberto).
+  useEffect(() => {
+    const f = consumeOpenFile();
+    if (!f) return;
+    openBytes(f.bytes, f.name, f.mimeType).catch((e) => {
+      toast.error(`Erro ao abrir: ${e instanceof Error ? e.message : e}`);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key]);
 
   // libera o doc anterior sempre que troca de PDF, e o atual ao desmontar a tela
   useEffect(() => {
@@ -28,6 +60,13 @@ const Viewer = () => {
       if (doc) void destroyPdf(doc);
     };
   }, [doc]);
+
+  // revoga o objectURL da imagem ao trocar de arquivo/desmontar
+  useEffect(() => {
+    return () => {
+      if (imgUrl) URL.revokeObjectURL(imgUrl);
+    };
+  }, [imgUrl]);
 
   // Render virtualizado: 1 placeholder por página; IntersectionObserver renderiza
   // o canvas quando a página se aproxima do viewport (rootMargin) e DESCARTA os
@@ -155,12 +194,14 @@ const Viewer = () => {
     };
   }, [doc, zoom]);
 
+  const hasContent = Boolean(doc || imgUrl);
+
   return (
     <div className="min-h-full flex flex-col">
       <header className="flex items-center gap-3 p-3 bg-slate-900 sticky top-0 z-10">
         <Link to="/"><ArrowLeft size={18} /></Link>
-        <span className="flex-1 text-sm truncate">{file?.name ?? "Visualizar PDF"}</span>
-        {doc && (
+        <span className="flex-1 text-sm truncate">{name ?? "Visualizar PDF"}</span>
+        {hasContent && (
           <>
             <button type="button" onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))}>
               <ZoomOut size={18} />
@@ -168,21 +209,30 @@ const Viewer = () => {
             <button type="button" onClick={() => setZoom((z) => Math.min(3, z + 0.25))}>
               <ZoomIn size={18} />
             </button>
-            <button type="button" onClick={() => file && shareBlob(file, file.name)}>
+            <button type="button" onClick={() => blob && name && shareBlob(blob, name)}>
               <Share2 size={18} />
             </button>
           </>
         )}
       </header>
-      {!doc ? (
+      {/* keys distintos: sem eles o React REUSA o mesmo <div> ao trocar de
+          modo e os canvases do pdf.js (inseridos imperativamente, fora do
+          React) ficariam no DOM acima da imagem (visto no QA do emulador) */}
+      {imgUrl ? (
+        <div key="image" className="flex-1 overflow-auto p-2">
+          <img src={imgUrl} alt={name ?? "imagem"}
+            className="mx-auto rounded shadow max-w-full"
+            style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }} />
+        </div>
+      ) : doc ? (
+        <div key="pdf" ref={containerRef} className="flex-1 overflow-auto p-2" />
+      ) : (
         <div className="flex-1 flex items-center justify-center p-8">
           <button type="button" onClick={handleOpen}
             className="px-6 py-3 bg-blue-600 rounded-xl text-sm font-medium">
             Escolher PDF
           </button>
         </div>
-      ) : (
-        <div ref={containerRef} className="flex-1 overflow-auto p-2" />
       )}
     </div>
   );
