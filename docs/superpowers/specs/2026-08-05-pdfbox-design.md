@@ -73,6 +73,12 @@ Clone do padrão PhysiqCalc/NutriTrack:
 
 - `@capacitor/camera`: tira 1+ fotos em sequência → cada foto vira uma página → 1 PDF
 - Preview com opção de refazer/remover foto antes de gerar
+- **Filtros por foto antes de gerar o PDF** (canvas pixel manipulation, offline):
+  - **Original** — do jeito que está
+  - **P&B Digitalização** — grayscale + contraste alto + threshold suave (aparência de scanner)
+  - **Escala de cinza** — grayscale simples
+  - **Realce** — aumento de contraste/brilho e saturação leve (documento colorido mais legível)
+- Preview do filtro aplicado em tempo real; filtro escolhido por foto (não global)
 - v1 sem detecção automática de borda/perspectiva (foto entra como está)
 
 ### 3. Arquivos
