@@ -1,32 +1,87 @@
-# React + TypeScript + Vite
+# PDFBox
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+App Android **100% offline** de manipulação de PDF: visualizador, conversões, compressão, organização de páginas e digitalização — tudo processado no dispositivo, sem upload de arquivos para nenhum servidor.
 
-Currently, two official plugins are available:
+## Funcionalidades
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **Viewer de PDF** com navegação por páginas e zoom.
+- **Conversões** (todas offline, no próprio device):
+  - PDF ↔ Word (docx)
+  - Imagem → PDF / PDF → Imagens
+  - HTML → PDF
+  - PDF ↔ Excel (xlsx)
+- **Compressão**: PDF, imagem e vídeo.
+- **Organização de páginas**: juntar (merge), dividir (split) e remover páginas de um PDF.
+- **Digitalizar (scan)**: captura via câmera com filtros de imagem (realce de documento) e exportação para PDF.
+- **Atualização in-app**: o app verifica a última release no GitHub e oferece baixar/instalar a atualização direto pela UI, sem precisar de loja de apps.
 
-## React Compiler
+## Stack
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **Capacitor 8** + **Vite** + **React 19** + **TypeScript**
+- Processamento offline no cliente:
+  - `pdfjs-dist` (renderização de PDF)
+  - `pdf-lib` (manipulação de PDF: merge/split/remove/compress)
+  - `docx` + `mammoth` (geração/leitura de Word)
+  - `xlsx` (SheetJS, Excel)
+  - `tesseract.js` (OCR)
+  - `browser-image-compression` / `html2canvas` (imagem e HTML)
+- Plugins nativos Android (Capacitor, Java):
+  - `MediaSaverPlugin` — salvar arquivos gerados na galeria/armazenamento
+  - `VideoCompressorPlugin` — compressão de vídeo nativa
+  - `ApkInstallerPlugin` — download + instalação do APK de atualização
 
-## Expanding the Oxlint configuration
+## Como buildar
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run build
+npx cap sync android
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Build de release do APK (assinado):
+
+```bash
+cd android
+ANDROID_HOME=/caminho/para/android-sdk JAVA_HOME=/caminho/para/jdk21 \
+  ./gradlew :app:assembleRelease
+```
+
+O APK final fica em `android/app/build/outputs/apk/release/app-release.apk`.
+
+### Assinatura (keystore)
+
+O build de release exige `android/key.properties` (**não versionado**, listado no
+`android/.gitignore`) apontando para um keystore local, por exemplo `~/keystores/pdfbox.keystore`:
+
+```properties
+storeFile=/home/USUARIO/keystores/pdfbox.keystore
+storePassword=...
+keyAlias=...
+keyPassword=...
+```
+
+Sem esse arquivo, `assembleRelease` gera um APK não assinado.
+
+## Como fazer uma release
+
+1. Bump de versão no `package.json` (ex.: `npm version patch --no-git-tag-version`).
+2. Rebuild (`npm run build && npx cap sync android`) e gerar o APK release (comando acima).
+3. Publicar a release no GitHub, com o APK como asset:
+   ```bash
+   gh release create vX.Y.Z android/app/build/outputs/apk/release/app-release.apk#pdfbox-vX.Y.Z.apk \
+     --title "PDFBox vX.Y.Z" --notes "..."
+   ```
+4. O app instalado detecta a nova tag (`vX.Y.Z` > versão atual) via API do GitHub e oferece
+   o update in-app (download com barra de progresso + instalador do Android).
+
+## Estrutura de pastas
+
+```
+src/
+  components/   componentes de UI (viewer, grid de páginas, checagem de update, etc.)
+  screens/      telas do app (Home, Convert, Merge, SplitRemove, CompressPdf/Image/Video, Scan, Viewer)
+  lib/          lógica: conversões (lib/convert/*), operações de PDF, OCR, updater, arquivos
+  types/        tipagens auxiliares
+android/        projeto nativo Capacitor (plugins Java, gradle, manifest)
+docs/           specs e planos de desenvolvimento
+```
