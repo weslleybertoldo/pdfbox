@@ -25,6 +25,7 @@ async function reencodeToJpeg(bytes: Uint8Array, type: string): Promise<Uint8Arr
   canvas.width = bmp.width;
   canvas.height = bmp.height;
   canvas.getContext("2d")!.drawImage(bmp, 0, 0);
+  bmp.close();
   const blob: Blob = await new Promise((res, rej) =>
     canvas.toBlob((b) => (b ? res(b) : rej(new Error("toBlob"))), "image/jpeg", 0.92),
   );

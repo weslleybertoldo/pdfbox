@@ -5,8 +5,14 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl; // bundle local, sem CDN
 
 export type PdfDoc = pdfjs.PDFDocumentProxy;
 
+/** Carrega um PDF a partir dos bytes; quem carrega, destrói via destroyPdf. */
 export const loadPdf = (bytes: Uint8Array): Promise<PdfDoc> =>
   pdfjs.getDocument({ data: bytes }).promise;
+
+/** Libera worker + caches do documento; chamar sempre que terminar de usar o doc. */
+export async function destroyPdf(doc: PdfDoc): Promise<void> {
+  await doc.loadingTask.destroy();
+}
 
 /** Renderiza 1 página num canvas na escala dada. */
 export async function renderPage(
