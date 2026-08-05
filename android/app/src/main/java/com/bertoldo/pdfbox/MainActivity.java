@@ -10,6 +10,7 @@ public class MainActivity extends BridgeActivity {
     registerPlugin(VideoCompressorPlugin.class);
     registerPlugin(ApkInstallerPlugin.class);
     registerPlugin(IntentReceiverPlugin.class);
+    registerPlugin(ShareTargetsPlugin.class);
     super.onCreate(savedInstanceState);
   }
 }
