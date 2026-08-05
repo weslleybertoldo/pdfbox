@@ -4,7 +4,9 @@ import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import PageGrid from "../components/PageGrid";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
+import RecentsButton from "../components/RecentsButton";
 import { pickFiles, readFileAsBytes } from "../lib/files";
+import { addRecent } from "../lib/recents";
 import { loadPdf, renderThumbnails, destroyPdf } from "../lib/pdfRender";
 import { extractPages } from "../lib/pdfOps";
 import { splitSelection } from "../lib/pageSelection";
@@ -19,9 +21,8 @@ const SplitRemove = () => {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ResultFile[] | null>(null);
 
-  const handlePick = async () => {
-    const [f] = await pickFiles("application/pdf");
-    if (!f) return;
+  /** Abre um PDF (picker ou histórico); sucesso na abertura registra no histórico. */
+  const openFile = async (f: File) => {
     setBusy(true);
     try {
       const b = await readFileAsBytes(f);
@@ -35,11 +36,18 @@ const SplitRemove = () => {
       }
       setSelected(new Set());
       setResult(null);
+      void addRecent("pages", { name: f.name, mime: f.type || "application/pdf", blob: f });
     } catch (e) {
       toast.error(`Erro ao abrir PDF: ${e instanceof Error ? e.message : e}`);
     } finally {
       setBusy(false);
     }
+  };
+
+  const handlePick = async () => {
+    const [f] = await pickFiles("application/pdf");
+    if (!f) return;
+    await openFile(f);
   };
 
   const handleRun = async () => {
@@ -70,9 +78,12 @@ const SplitRemove = () => {
 
   return (
     <div className="p-4 max-w-lg mx-auto space-y-4">
-      <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
-        <ArrowLeft size={16} /> Voltar
-      </Link>
+      <div className="flex items-center justify-between">
+        <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
+          <ArrowLeft size={16} /> Voltar
+        </Link>
+        <RecentsButton category="pages" onPick={(f) => void openFile(f)} />
+      </div>
       <h2 className="text-lg font-semibold">{isSplit ? "Dividir PDF" : "Remover páginas"}</h2>
       <p className="text-xs text-slate-400">
         {isSplit

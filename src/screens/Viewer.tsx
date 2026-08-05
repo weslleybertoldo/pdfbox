@@ -21,10 +21,12 @@ import {
   type PdfAnnotation,
 } from "../lib/pdfAnnotate";
 import { consumeOpenFile } from "../lib/openFileStore";
+import { addRecent } from "../lib/recents";
 import { docxToHtml } from "../lib/convert/docxToPdf";
 import { sanitizeHtml } from "../lib/convert/htmlPipeline";
 import { editedDomToDocx } from "../lib/convert/htmlToDocx";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
+import RecentsButton from "../components/RecentsButton";
 
 /** Botão da toolbar de edição: preventDefault no mousedown preserva a seleção. */
 const ToolBtn = ({ label, onClick, children }: {
@@ -305,6 +307,8 @@ const Viewer = () => {
       setDocxHtml(null);
       setDoc(await loadPdf(bytes));
     }
+    // abriu com sucesso (qualquer origem) → registra no histórico do viewer
+    void addRecent("viewer", { name: fileName, mime: mimeType, blob: b });
   };
 
   const handleOpen = async () => {
@@ -1006,6 +1010,18 @@ const Viewer = () => {
         <div className="flex items-center gap-3 p-3">
           <Link to="/"><ArrowLeft size={18} /></Link>
           <span className="flex-1 text-sm truncate">{name ?? "Visualizar"}</span>
+          {!editing && !annotating && (
+            <RecentsButton
+              category="viewer"
+              onPick={async (f) => {
+                try {
+                  await openBytes(new Uint8Array(await f.arrayBuffer()), f.name, f.type);
+                } catch (e) {
+                  toast.error(`Erro ao abrir: ${e instanceof Error ? e.message : e}`);
+                }
+              }}
+            />
+          )}
           {doc && (
             <button
               type="button"

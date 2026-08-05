@@ -3,7 +3,9 @@ import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
+import RecentsButton from "../components/RecentsButton";
 import { pickFiles, IMG_ACCEPT } from "../lib/files";
+import { addRecent } from "../lib/recents";
 import { compressImage, type CompressMode } from "../lib/convert/compress";
 
 const MODES: { id: CompressMode; label: string; desc: string }[] = [
@@ -21,15 +23,15 @@ const CompressImage = () => {
   const [result, setResult] = useState<ResultFile[] | null>(null);
   const [sizeBefore, setSizeBefore] = useState(0);
 
-  const handlePick = async () => {
-    const [f] = await pickFiles(IMG_ACCEPT);
-    if (!f) return;
+  /** Comprime (picker ou histórico); sucesso registra a entrada no histórico. */
+  const runCompress = async (f: File) => {
     setResult(null);
     setSizeBefore(f.size);
     setBusy(true);
     try {
       const blob = await compressImage(f, mode, fmt);
       setResult([{ blob, name: `${baseName(f)}-comprimido.${fmt}`, collection: "images" }]);
+      void addRecent("compress-image", { name: f.name, mime: f.type, blob: f });
     } catch (e) {
       toast.error(`Falha: ${e instanceof Error ? e.message : e}`);
     } finally {
@@ -37,11 +39,20 @@ const CompressImage = () => {
     }
   };
 
+  const handlePick = async () => {
+    const [f] = await pickFiles(IMG_ACCEPT);
+    if (!f) return;
+    await runCompress(f);
+  };
+
   return (
     <div className="p-4 max-w-lg mx-auto space-y-4">
-      <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
-        <ArrowLeft size={16} /> Voltar
-      </Link>
+      <div className="flex items-center justify-between">
+        <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
+          <ArrowLeft size={16} /> Voltar
+        </Link>
+        <RecentsButton category="compress-image" onPick={(f) => void runCompress(f)} />
+      </div>
       <h2 className="text-lg font-semibold">Comprimir imagem</h2>
       <div className="space-y-2">
         {MODES.map((m) => (

@@ -4,7 +4,9 @@ import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import ProgressBar from "../components/ProgressBar";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
+import RecentsButton from "../components/RecentsButton";
 import { pickFiles, readFileAsBytes, IMG_ACCEPT } from "../lib/files";
+import { addRecent } from "../lib/recents";
 import { pdfToImages } from "../lib/convert/pdfToImages";
 import { imagesToPdf } from "../lib/convert/imagesToPdf";
 import { pdfToDocx } from "../lib/convert/pdfToDocx";
@@ -108,13 +110,15 @@ const Convert = () => {
 
   if (!cfg) return <p className="p-8 text-center">Ação desconhecida.</p>;
 
-  const handlePick = async () => {
-    const files = await pickFiles(cfg.accept, cfg.multiple);
-    if (!files.length) return;
+  /** Roda a conversão (picker ou histórico); sucesso registra as entradas. */
+  const runConvert = async (files: File[]) => {
     setResult(null);
     setProgress(0);
     try {
       setResult(await cfg.run(files, fmt, setProgress));
+      for (const f of files) {
+        void addRecent(`convert:${action}`, { name: f.name, mime: f.type, blob: f });
+      }
     } catch (e) {
       toast.error(`Falha na conversão: ${e instanceof Error ? e.message : e}`);
     } finally {
@@ -122,11 +126,20 @@ const Convert = () => {
     }
   };
 
+  const handlePick = async () => {
+    const files = await pickFiles(cfg.accept, cfg.multiple);
+    if (!files.length) return;
+    await runConvert(files);
+  };
+
   return (
     <div className="p-4 max-w-lg mx-auto space-y-4">
-      <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
-        <ArrowLeft size={16} /> Voltar
-      </Link>
+      <div className="flex items-center justify-between">
+        <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
+          <ArrowLeft size={16} /> Voltar
+        </Link>
+        <RecentsButton category={`convert:${action}`} onPick={(f) => void runConvert([f])} />
+      </div>
       <h2 className="text-lg font-semibold">{cfg.title}</h2>
       {cfg.askFormat && (
         <div className="flex gap-2">

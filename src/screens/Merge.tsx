@@ -3,7 +3,9 @@ import { Link } from "react-router-dom";
 import { ArrowLeft, ArrowDown, ArrowUp, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
+import RecentsButton from "../components/RecentsButton";
 import { pickFiles, readFileAsBytes } from "../lib/files";
+import { addRecent } from "../lib/recents";
 import { mergePdfs } from "../lib/pdfOps";
 
 const Merge = () => {
@@ -31,6 +33,10 @@ const Merge = () => {
       const merged = await mergePdfs(inputs);
       setResult([{ blob: new Blob([merged.slice()], { type: "application/pdf" }),
         name: "juntado.pdf", collection: "downloads" }]);
+      // sucesso: cada PDF de entrada vai pro histórico
+      for (const f of files) {
+        void addRecent("merge", { name: f.name, mime: f.type || "application/pdf", blob: f });
+      }
     } catch (e) {
       toast.error(`Falha ao juntar: ${e instanceof Error ? e.message : e}`);
     } finally {
@@ -40,9 +46,14 @@ const Merge = () => {
 
   return (
     <div className="p-4 max-w-lg mx-auto space-y-4">
-      <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
-        <ArrowLeft size={16} /> Voltar
-      </Link>
+      <div className="flex items-center justify-between">
+        <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
+          <ArrowLeft size={16} /> Voltar
+        </Link>
+        {/* histórico: tap adiciona o PDF direto à lista do merge, sem picker */}
+        <RecentsButton category="merge"
+          onPick={(f) => { setFiles((x) => [...x, f]); setResult(null); }} />
+      </div>
       <h2 className="text-lg font-semibold">Juntar PDFs</h2>
       {files.map((f, i) => (
         <div key={`${f.name}-${i}`}

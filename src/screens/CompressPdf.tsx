@@ -4,7 +4,9 @@ import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import ProgressBar from "../components/ProgressBar";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
+import RecentsButton from "../components/RecentsButton";
 import { pickFiles, readFileAsBytes } from "../lib/files";
+import { addRecent } from "../lib/recents";
 import { compressPdfLight, compressPdfStrong, type CompressMode } from "../lib/convert/compress";
 
 const MODES: { id: CompressMode; label: string; desc: string }[] = [
@@ -19,9 +21,8 @@ const CompressPdf = () => {
   const [result, setResult] = useState<ResultFile[] | null>(null);
   const [sizeBefore, setSizeBefore] = useState(0);
 
-  const handlePick = async () => {
-    const [f] = await pickFiles("application/pdf");
-    if (!f) return;
+  /** Comprime (picker ou histórico); sucesso registra a entrada no histórico. */
+  const runCompress = async (f: File) => {
     setResult(null);
     setSizeBefore(f.size);
     setProgress(0);
@@ -33,6 +34,7 @@ const CompressPdf = () => {
       // .slice() garante Uint8Array<ArrayBuffer> (BlobPart exige isso, não ArrayBufferLike genérico)
       setResult([{ blob: new Blob([out.slice()], { type: "application/pdf" }),
         name: f.name.replace(/\.pdf$/i, "-comprimido.pdf"), collection: "downloads" }]);
+      void addRecent("compress-pdf", { name: f.name, mime: f.type || "application/pdf", blob: f });
     } catch (e) {
       toast.error(`Falha: ${e instanceof Error ? e.message : e}`);
     } finally {
@@ -40,11 +42,20 @@ const CompressPdf = () => {
     }
   };
 
+  const handlePick = async () => {
+    const [f] = await pickFiles("application/pdf");
+    if (!f) return;
+    await runCompress(f);
+  };
+
   return (
     <div className="p-4 max-w-lg mx-auto space-y-4">
-      <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
-        <ArrowLeft size={16} /> Voltar
-      </Link>
+      <div className="flex items-center justify-between">
+        <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
+          <ArrowLeft size={16} /> Voltar
+        </Link>
+        <RecentsButton category="compress-pdf" onPick={(f) => void runCompress(f)} />
+      </div>
       <h2 className="text-lg font-semibold">Comprimir PDF</h2>
       <div className="space-y-2">
         {MODES.map((m) => (
