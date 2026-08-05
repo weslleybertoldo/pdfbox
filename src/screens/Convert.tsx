@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import ProgressBar from "../components/ProgressBar";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
 import RecentsButton from "../components/RecentsButton";
-import { pickFiles, readFileAsBytes, IMG_ACCEPT } from "../lib/files";
+import { pickFiles, readFileAsBytes, DOCX_MIME, IMG_ACCEPT } from "../lib/files";
 import { addRecent } from "../lib/recents";
 import { pdfToImages } from "../lib/convert/pdfToImages";
 import { imagesToPdf } from "../lib/convert/imagesToPdf";
@@ -93,6 +93,22 @@ const ACTIONS: Record<string, ActionCfg> = {
 const defaultFmt = (action: string): Fmt =>
   action.includes("html") || action.includes("xlsx") ? "jpg" : "png";
 
+// MIME pro histórico quando o File vem sem type (picker de algumas ROMs/apps
+// entrega .docx/.xlsx/.html com type "") — deduz pela extensão do accept.
+const EXT_MIME: Record<string, string> = {
+  pdf: "application/pdf",
+  docx: DOCX_MIME,
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  html: "text/html",
+  htm: "text/html",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+};
+const mimeFor = (f: File): string =>
+  f.type || EXT_MIME[f.name.split(".").pop()?.toLowerCase() ?? ""] || "application/octet-stream";
+
 const Convert = () => {
   const { action = "" } = useParams();
   const cfg = ACTIONS[action];
@@ -117,7 +133,7 @@ const Convert = () => {
     try {
       setResult(await cfg.run(files, fmt, setProgress));
       for (const f of files) {
-        void addRecent(`convert:${action}`, { name: f.name, mime: f.type, blob: f });
+        void addRecent(`convert:${action}`, { name: f.name, mime: mimeFor(f), blob: f });
       }
     } catch (e) {
       toast.error(`Falha na conversão: ${e instanceof Error ? e.message : e}`);

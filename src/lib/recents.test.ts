@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   createRecents,
+  exceedsFileCap,
+  MAX_FILE_BYTES,
   type BlobStorage,
   type MetaStorage,
   type RecentMeta,
@@ -30,7 +32,9 @@ const makeBlobStore = () => {
   return { store, blobs };
 };
 
-const makeRecents = (opts: { maxPerCategory?: number; maxTotalBytes?: number } = {}) => {
+const makeRecents = (
+  opts: { maxPerCategory?: number; maxTotalBytes?: number; maxFileBytes?: number } = {},
+) => {
   let tick = 0;
   let seq = 0;
   const meta = makeMetaStore();
@@ -157,6 +161,37 @@ describe("recents: getRecentBlob / removeRecent / clearRecents", () => {
     expect(api.listRecents("viewer")).toHaveLength(0);
     expect(api.listRecents("merge")).toHaveLength(1);
     expect(blobs.size).toBe(1);
+  });
+});
+
+describe("recents: teto por arquivo (MAX_FILE_BYTES)", () => {
+  it("exceedsFileCap: decide o skip no limite exato", () => {
+    expect(exceedsFileCap(100, 100)).toBe(false); // no teto → entra
+    expect(exceedsFileCap(101, 100)).toBe(true); // acima → skip
+    expect(MAX_FILE_BYTES).toBe(30 * 1024 * 1024); // 30MB (default do app)
+    expect(exceedsFileCap(MAX_FILE_BYTES)).toBe(false);
+    expect(exceedsFileCap(MAX_FILE_BYTES + 1)).toBe(true);
+  });
+
+  it("blob acima do teto → skip silencioso: sem meta, sem bytes", async () => {
+    const { api, blobs } = makeRecents({ maxFileBytes: 100 });
+    await expect(api.addRecent("viewer", file("grande.pdf", 101))).resolves.toBeUndefined();
+    expect(api.listRecents("viewer")).toHaveLength(0);
+    expect(blobs.size).toBe(0);
+  });
+
+  it("blob no teto exato entra normalmente", async () => {
+    const { api, blobs } = makeRecents({ maxFileBytes: 100 });
+    await api.addRecent("viewer", file("justo.pdf", 100));
+    expect(api.listRecents("viewer").map((m) => m.name)).toEqual(["justo.pdf"]);
+    expect(blobs.size).toBe(1);
+  });
+
+  it("skip do gigante não mexe nos itens já registrados", async () => {
+    const { api } = makeRecents({ maxFileBytes: 100 });
+    await api.addRecent("viewer", file("a.pdf", 10));
+    await api.addRecent("viewer", file("grande.pdf", 500));
+    expect(api.listRecents("viewer").map((m) => m.name)).toEqual(["a.pdf"]);
   });
 });
 

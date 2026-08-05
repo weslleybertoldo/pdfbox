@@ -11,6 +11,9 @@
  * - Limites: MAX_PER_CATEGORY itens por categoria e MAX_TOTAL_BYTES globais
  *   com LRU entre categorias (ts mais antigo sai primeiro); eviction apaga
  *   o arquivo físico.
+ * - Teto por arquivo: blob acima de MAX_FILE_BYTES é IGNORADO em silêncio
+ *   (skip sem gravar meta nem bytes) — histórico é conveniência, não vale
+ *   duplicar um arquivo gigante no storage do app.
  *
  * A lógica é pura e recebe os storages por injeção (createRecents) — os
  * testes usam fakes em memória; o app usa o singleton com localStorage +
@@ -42,10 +45,16 @@ export interface BlobStorage {
 
 export const MAX_PER_CATEGORY = 10;
 export const MAX_TOTAL_BYTES = 200 * 1024 * 1024; // ~200MB globais
+export const MAX_FILE_BYTES = 30 * 1024 * 1024; // 30MB — teto por arquivo
+
+/** Decisão de skip do teto por arquivo (pura, testável isolada). */
+export const exceedsFileCap = (size: number, cap: number = MAX_FILE_BYTES): boolean =>
+  size > cap;
 
 interface RecentsOptions {
   maxPerCategory?: number;
   maxTotalBytes?: number;
+  maxFileBytes?: number;
   now?: () => number;
   newId?: () => string;
 }
@@ -71,6 +80,7 @@ export function createRecents(
 ): RecentsApi {
   const maxPerCategory = opts.maxPerCategory ?? MAX_PER_CATEGORY;
   const maxTotalBytes = opts.maxTotalBytes ?? MAX_TOTAL_BYTES;
+  const maxFileBytes = opts.maxFileBytes ?? MAX_FILE_BYTES;
   const now = opts.now ?? Date.now;
   const newId = opts.newId ?? defaultId;
 
@@ -103,6 +113,7 @@ export function createRecents(
   const addRecent: RecentsApi["addRecent"] = async (category, file) => {
     try {
       const size = file.blob.size;
+      if (exceedsFileCap(size, maxFileBytes)) return; // acima do teto → skip silencioso (sem meta)
       const list = meta.get(category);
       const dup = list.find((m) => m.name === file.name && m.size === size);
       if (dup) {
