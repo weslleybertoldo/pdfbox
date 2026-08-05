@@ -25,20 +25,42 @@ export async function destroyPdf(doc: PdfDoc): Promise<void> {
   await doc.loadingTask.destroy();
 }
 
-/** Renderiza 1 página num canvas na escala dada. */
+/** Maior dimensão física permitida por canvas — zoom alto × DPR estoura o
+ *  limite de canvas/memória da WebView Android. */
+const MAX_CANVAS_DIM = 4096;
+
+/**
+ * Renderiza 1 página num canvas na escala dada.
+ *
+ * `opts.dpr` multiplica só a resolução FÍSICA do canvas (nitidez em telas de
+ * alta densidade); o tamanho CSS (style.width/height) fica na escala lógica.
+ * Default 1: consumidores que usam o canvas como IMAGEM (pdfToImages,
+ * compressPdfStrong, thumbnails) não ganham DPR implícito — mudaria a
+ * resolução dos arquivos gerados. O viewer passa window.devicePixelRatio.
+ * A escala física total (scale*dpr) é limitada por MAX_CANVAS_DIM.
+ */
 export async function renderPage(
   doc: PdfDoc,
   pageNum: number,
   scale: number,
+  opts?: { dpr?: number },
 ): Promise<HTMLCanvasElement> {
   const page = await doc.getPage(pageNum);
-  const viewport = page.getViewport({ scale });
+  const viewport = page.getViewport({ scale }); // tamanho CSS (lógico)
+  const physRatio = Math.min(
+    opts?.dpr ?? 1,
+    MAX_CANVAS_DIM / Math.max(viewport.width, viewport.height),
+  );
+  const physViewport =
+    physRatio === 1 ? viewport : page.getViewport({ scale: scale * physRatio });
   const canvas = document.createElement("canvas");
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
+  canvas.width = physViewport.width;
+  canvas.height = physViewport.height;
+  canvas.style.width = `${viewport.width}px`;
+  canvas.style.height = `${viewport.height}px`;
   // `canvas` (não `canvasContext`) é o param aceito nesta versão do pdf.js;
   // internamente ele deriva o contexto 2D do próprio canvas.
-  await page.render({ canvas, viewport }).promise;
+  await page.render({ canvas, viewport: physViewport }).promise;
   return canvas;
 }
 

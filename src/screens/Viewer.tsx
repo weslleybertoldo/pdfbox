@@ -85,6 +85,8 @@ const Viewer = () => {
     const wanted = new Set<number>(); // fila de render
     let rendering = false;
     const baseW = container.clientWidth - 16;
+    // resolução física = escala CSS × DPR (nitidez em tela de alta densidade)
+    const dpr = window.devicePixelRatio || 1;
 
     const discard = (p: number) => {
       const canvas = live.get(p);
@@ -122,7 +124,8 @@ const Viewer = () => {
           wanted.delete(next);
           const page = await doc.getPage(next);
           const scale = (baseW / page.getViewport({ scale: 1 }).width) * zoom;
-          const canvas = await renderPage(doc, next, scale);
+          const viewport = page.getViewport({ scale }); // tamanho CSS (lógico)
+          const canvas = await renderPage(doc, next, scale, { dpr });
           if (cancelled) {
             canvas.width = 0;
             canvas.height = 0;
@@ -130,7 +133,8 @@ const Viewer = () => {
           }
           canvas.className = "mx-auto rounded shadow max-w-none";
           const wrapper = wrappers[next - 1];
-          wrapper.style.height = `${canvas.height}px`; // altura real substitui a estimada
+          // altura real (CSS, não física) substitui a estimada
+          wrapper.style.height = `${viewport.height}px`;
           wrapper.replaceChildren(canvas);
           live.set(next, canvas);
           evictFar();
