@@ -5,9 +5,15 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl; // bundle local, sem CDN
 
 export type PdfDoc = pdfjs.PDFDocumentProxy;
 
-/** Carrega um PDF a partir dos bytes; quem carrega, destrói via destroyPdf. */
+/**
+ * Carrega um PDF a partir dos bytes; quem carrega, destrói via destroyPdf.
+ * `.slice()` copia pra um ArrayBuffer novo: o pdf.js transfere (detach) o
+ * buffer original pro worker, então sem a cópia uma 2ª chamada com os mesmos
+ * `bytes` (ex.: usuário tenta comprimir "média" e depois "forte" na mesma
+ * tela) quebra com "ArrayBuffer ... already detached".
+ */
 export const loadPdf = (bytes: Uint8Array): Promise<PdfDoc> =>
-  pdfjs.getDocument({ data: bytes }).promise;
+  pdfjs.getDocument({ data: bytes.slice() }).promise;
 
 /** Libera worker + caches do documento; chamar sempre que terminar de usar o doc. */
 export async function destroyPdf(doc: PdfDoc): Promise<void> {
