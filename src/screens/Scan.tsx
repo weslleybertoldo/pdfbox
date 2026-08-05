@@ -24,6 +24,9 @@ async function filteredJpeg(shot: Shot): Promise<Uint8Array> {
   const blob: Blob = await new Promise((res, rej) =>
     canvas.toBlob((b) => (b ? res(b) : rej(new Error("toBlob"))), "image/jpeg", 0.85),
   );
+  // zera o canvas pra liberar o backing store imediatamente (fotos full-res somam rápido)
+  canvas.width = 0;
+  canvas.height = 0;
   return new Uint8Array(await blob.arrayBuffer());
 }
 
@@ -55,6 +58,7 @@ const Scan = () => {
         resultType: CameraResultType.DataUrl,
         source: CameraSource.Camera,
         quality: 90,
+        width: 2048, // cap de resolução: suficiente pra documento e evita OOM com várias fotos
       });
       if (!photo.dataUrl) return;
       const shot: Shot = { dataUrl: photo.dataUrl, filter: "original" };
@@ -73,8 +77,11 @@ const Scan = () => {
   const generatePdf = async () => {
     setBusy(true);
     try {
-      const pages = await Promise.all(shots.map(filteredJpeg));
-      const pdf = await imagesToPdf(pages.map((bytes) => ({ bytes, type: "image/jpeg" })));
+      // sequencial (não Promise.all): 1 canvas/Image full-res vivo por vez — N fotos
+      // decodificadas simultaneamente estouravam a memória da WebView
+      const pages: { bytes: Uint8Array; type: string }[] = [];
+      for (const shot of shots) pages.push({ bytes: await filteredJpeg(shot), type: "image/jpeg" });
+      const pdf = await imagesToPdf(pages);
       setResult([{ blob: new Blob([pdf.slice()], { type: "application/pdf" }),
         name: `digitalizado-${new Date().toISOString().slice(0, 10)}.pdf`,
         collection: "downloads" }]);
