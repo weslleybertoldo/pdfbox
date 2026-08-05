@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">PDFBox</string>
+    <string name="title_activity_main">PDFBox</string>
+    <string name="package_name">com.bertoldo.pdfbox</string>
+    <string name="custom_url_scheme">com.bertoldo.pdfbox</string>
+</resources>

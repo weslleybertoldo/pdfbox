@@ -11,6 +11,14 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/browser": "^8.0.4",
+    "@capacitor/camera": "^8.2.2",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/share": "^8.0.1",
     "lucide-react": "^1.28.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
