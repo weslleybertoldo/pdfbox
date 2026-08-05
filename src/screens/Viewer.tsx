@@ -19,7 +19,12 @@ const Viewer = () => {
   const [imgUrl, setImgUrl] = useState<string | null>(null); // modo imagem
   const [zoom, setZoom] = useState(1);
   const containerRef = useRef<HTMLDivElement>(null);
+  const zoomRef = useRef(zoom); // valor atual pro handler de pinch (efeito só depende de doc)
+  const pendingScrollRef = useRef<number | null>(null); // scrollTop a aplicar após re-render de zoom
   const location = useLocation();
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
 
   /** Abre bytes de qualquer origem (picker, intent externo, ResultPanel). */
   const openBytes = async (bytes: Uint8Array, fileName: string, mimeType: string) => {
@@ -205,6 +210,12 @@ const Viewer = () => {
           wrappers.push(w);
           observer.observe(w);
         }
+        // zoom via pinch: restaura a posição de scroll aproximada do ponto focal
+        if (pendingScrollRef.current !== null) {
+          const scroller = document.scrollingElement;
+          if (scroller) scroller.scrollTop = pendingScrollRef.current;
+          pendingScrollRef.current = null;
+        }
       } catch (e) {
         if (cancelled) return;
         console.error(e);
@@ -218,6 +229,100 @@ const Viewer = () => {
       for (const p of [...live.keys()]) discard(p); // libera canvases/text layers
     };
   }, [doc, zoom]);
+
+  // Pinch zoom = zoom do botão: durante o gesto, transform: scale(g) no wrapper
+  // das páginas (visual imediato, barato); ao soltar, limpa o transform e
+  // re-renderiza na escala final (mesmo fluxo/clamp 0.5–3 dos botões),
+  // preservando a posição de scroll aproximada do ponto focal. O zoom nativo
+  // da WebView está desligado (meta viewport) e touch-action: pan-x pan-y
+  // deixa o browser rolar com 1 dedo mas entrega os pointer events da pinça.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!doc || !el) return;
+    const pointers = new Map<number, { x: number; y: number }>();
+    let gesture = false;
+    let g = 1; // fator do gesto (dist atual / dist inicial), clampado
+    let startDist = 0;
+    let startZoom = 1;
+    let startMid = { x: 0, y: 0 };
+    let startScrollTop = 0;
+    let startOffsetTop = 0; // topo do container em coordenadas do documento
+
+    const dist = () => {
+      const [a, b] = [...pointers.values()];
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+    const clearTransform = () => {
+      el.style.transform = "";
+      el.style.transformOrigin = "";
+    };
+
+    const onDown = (e: PointerEvent) => {
+      if (e.pointerType !== "touch") return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size !== 2) return;
+      const [a, b] = [...pointers.values()];
+      gesture = true;
+      g = 1;
+      startDist = dist();
+      startZoom = zoomRef.current;
+      startMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const scroller = document.scrollingElement;
+      startScrollTop = scroller?.scrollTop ?? 0;
+      const rect = el.getBoundingClientRect();
+      startOffsetTop = rect.top + startScrollTop;
+      el.style.transformOrigin = `${startMid.x - rect.left}px ${startMid.y - rect.top}px`;
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!pointers.has(e.pointerId)) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (!gesture || pointers.size < 2 || startDist === 0) return;
+      // clamp de g tal que a escala FINAL (startZoom*g) fique no 0.5–3 dos botões
+      g = Math.min(3 / startZoom, Math.max(0.5 / startZoom, dist() / startDist));
+      el.style.transform = `scale(${g})`;
+    };
+    const onUp = (e: PointerEvent) => {
+      if (!pointers.delete(e.pointerId)) return;
+      if (!gesture || pointers.size >= 2) return;
+      gesture = false;
+      clearTransform();
+      const newZoom = Math.min(3, Math.max(0.5, startZoom * g));
+      if (Math.abs(newZoom - startZoom) < 0.01) return;
+      // scrollTop' ≈ (scrollTop + focoY - topoContainer)*ratio + topoContainer - focoY
+      const ratio = newZoom / startZoom;
+      pendingScrollRef.current = Math.max(
+        0,
+        (startScrollTop + startMid.y - startOffsetTop) * ratio + startOffsetTop - startMid.y,
+      );
+      setZoom(newZoom); // mesmo fluxo do botão: efeito de render re-roda na nova escala
+    };
+    const onCancel = (e: PointerEvent) => {
+      pointers.delete(e.pointerId);
+      if (gesture && pointers.size < 2) {
+        gesture = false;
+        clearTransform(); // gesto abortado: mantém o zoom atual
+      }
+    };
+    // impede o scroll nativo de 2 dedos de brigar com a pinça (precisa ser
+    // touchmove não-passivo; preventDefault em pointermove não bloqueia scroll)
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length >= 2) e.preventDefault();
+    };
+
+    el.addEventListener("pointerdown", onDown);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    el.addEventListener("touchmove", onTouchMove, { passive: false });
+    return () => {
+      el.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      el.removeEventListener("touchmove", onTouchMove);
+      clearTransform();
+    };
+  }, [doc]);
 
   const hasContent = Boolean(doc || imgUrl);
 
@@ -250,7 +355,12 @@ const Viewer = () => {
             style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }} />
         </div>
       ) : doc ? (
-        <div key="pdf" ref={containerRef} className="flex-1 overflow-auto p-2" />
+        <div
+          key="pdf"
+          ref={containerRef}
+          className="flex-1 overflow-auto p-2"
+          style={{ touchAction: "pan-x pan-y" }}
+        />
       ) : (
         <div className="flex-1 flex items-center justify-center p-8">
           <button type="button" onClick={handleOpen}
