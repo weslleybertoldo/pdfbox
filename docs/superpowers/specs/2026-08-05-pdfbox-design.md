@@ -118,3 +118,22 @@ Clone do padrão PhysiqCalc/NutriTrack:
 - `.doc`/`.xls` legados, PPTX, edição de PDF, senha/criptografia, iOS, Play Store
 - PDF→Excel e PDF→HTML (extração de tabela/estrutura offline não é confiável)
 - Detecção automática de borda no scan (avaliar em v2)
+
+---
+
+# Adendo v1.1 (2026-08-05, aprovado pelo Weslley)
+
+## Viewer — correções
+- **Qualidade**: renderizar páginas com `devicePixelRatio` (canvas em resolução física, exibido em tamanho CSS) — corrige a nitidez ruim relatada
+- **Copiar texto**: text layer do pdf.js sobre cada página (seleção/cópia nativa)
+- **Pinch zoom = botão**: gesto de pinça faz transform durante o gesto e RE-RENDERIZA na escala final ao soltar (mesma qualidade do botão); zoom do navegador desabilitado (viewport)
+
+## Editar Word (lápis no topo do viewer)
+- Viewer de `.docx` in-app (mammoth→HTML, mesmo pipeline sandboxed)
+- Lápis → modo edição: contenteditable com formatação básica (negrito/itálico/listas/títulos); layout complexo pode degradar ao salvar (aceito)
+- Salvar → gera novo `.docx` + fluxo padrão de resultado (Salvar/Compartilhar/Visualizar)
+- `.docx` entra no "Abrir com" (intent-filter) e no botão Visualizar
+
+## Editar PDF (lápis no topo do viewer)
+- Modo **anotações** (edição de texto original de PDF é inviável offline — aceito): caixas de texto posicionáveis, desenho à mão livre, marca-texto
+- Salvar → novo PDF com anotações achatadas (pdf-lib), fluxo padrão de resultado
