@@ -75,6 +75,24 @@ body { @apply bg-slate-950 text-slate-100 antialiased; }
 .textLayer ::selection { background: rgb(37 99 235 / 0.45); }
 .textLayer br::selection { background: transparent; }
 
+/* Alças NATIVAS de seleção (Android): o hit-test do arrasto encaixa a
+   fronteira no texto mais próximo, então um vão vertical entre linhas faz a
+   seleção PULAR de linha (o endOfContent abaixo só governa extensão via
+   ponteiro dentro do layer, não as alças). Cada span ganha um ::after
+   invisível com a altura do vão até a linha de baixo (--hit-pad medido em
+   pdfRender.ts): o hit no vão resolve pro próprio span (a linha de CIMA).
+   position:absolute = fora do fluxo → NÃO muda o box/rect do span (geometria,
+   ::selection e --scale-x da v1.1.3 intactos) e, sem conteúdo, não entra na
+   seleção/cópia. */
+.textLayer span.hitPad::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: var(--hit-pad, 0);
+}
+
 /* endOfContent (viewer oficial): div user-select:none no fim do layer que,
    durante a seleção (.selecting, ligada pelos listeners em pdfRender.ts),
    cobre a página inteira SOB os spans (z-index 0 vs 1) — o ponteiro num vão

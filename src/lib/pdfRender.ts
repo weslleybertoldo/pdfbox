@@ -239,6 +239,72 @@ function correctSpanWidths(
 }
 
 /**
+ * Pós-render: expande a ÁREA DE HIT de cada span pra cobrir o vão vertical
+ * até a linha seguinte.
+ *
+ * As alças NATIVAS de seleção (Android) fazem hit-test no ponto do dedo e
+ * encaixam a fronteira no texto mais próximo — arrastar a alça por um vão
+ * entre linhas faz a seleção PULAR de linha (bug visto no device; o
+ * endOfContent só governa a extensão via ponteiro/mouse dentro do layer).
+ * Cada span recebe um ::after invisível (CSS .hitPad em index.css) com a
+ * altura do vão até a próxima linha abaixo que o sobrepõe na horizontal: um
+ * ponto no vão passa a resolver pro próprio span (a linha de CIMA),
+ * determinístico. O ::after é absolute (fora do fluxo) — o box do span, o
+ * alinhamento do ::selection e o --scale-x (v1.1.3) ficam intactos, e sem
+ * conteúdo nada entra na cópia. Vãos maiores que 3× a altura do span ficam
+ * de fora (título→rodapé etc.: comportamento nativo). Leituras e escritas em
+ * fases separadas (um único layout). Chamar DEPOIS de correctSpanWidths (a
+ * sobreposição horizontal usa as larguras já corrigidas).
+ */
+function expandHitAreas(
+  divs: HTMLElement[],
+  container: HTMLElement,
+  viewport: pdfjs.PageViewport,
+): void {
+  if (viewport.rotation % 180 !== 0) return; // página de lado: "abaixo" ≠ fluxo do texto
+  if (!container.offsetWidth) return; // fora do DOM/sem layout
+  // transform de ancestral (ex.: scale() do pinch) entra nos rects; o fator é
+  // uniforme, então dá pra dividir fora usando o próprio container
+  const ancestorScale = container.getBoundingClientRect().width / container.offsetWidth;
+  if (!(ancestorScale > 0)) return;
+  type Box = { div: HTMLElement; left: number; right: number; top: number; bottom: number };
+  const boxes: Box[] = [];
+  for (const div of divs) {
+    if (!div.textContent || div.getAttribute("role") === "img") continue;
+    if (div.style.getPropertyValue("--rotate")) continue; // texto em ângulo: AABB não serve
+    const r = div.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0)
+      boxes.push({ div, left: r.left, right: r.right, top: r.top, bottom: r.bottom });
+  }
+  const byTop = [...boxes].sort((a, b) => a.top - b.top);
+  const pads: [HTMLElement, number][] = [];
+  for (const b of boxes) {
+    const maxPad = (b.bottom - b.top) * 3;
+    // busca binária: primeiro box (em ordem de top) que começa abaixo deste
+    let lo = 0;
+    let hi = byTop.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (byTop[mid].top < b.bottom) lo = mid + 1;
+      else hi = mid;
+    }
+    for (let j = lo; j < byTop.length; j++) {
+      const o = byTop[j];
+      const gap = o.top - b.bottom;
+      if (gap > maxPad) break; // linha de baixo longe demais: sem pad
+      if (o.right > b.left && o.left < b.right) {
+        if (gap >= 1) pads.push([b.div, gap / ancestorScale]);
+        break; // menor top que sobrepõe = vão real; não olhar mais fundo
+      }
+    }
+  }
+  for (const [div, pad] of pads) {
+    div.classList.add("hitPad");
+    div.style.setProperty("--hit-pad", `${pad.toFixed(2)}px`);
+  }
+}
+
+/**
  * Text layer (seleção/cópia de texto): spans transparentes posicionados sobre
  * o canvas da página. `container` deve ser um `.textLayer` (CSS em index.css)
  * absoluto sobre o canvas E JÁ NO DOM (correctSpanWidths mede layout), e
@@ -265,6 +331,7 @@ export function renderTextLayer(
     await layer.render();
     if (cancelled) return;
     correctSpanWidths(textContent, layer.textDivs, container, viewport);
+    expandHitAreas(layer.textDivs, container, viewport);
     // endOfContent DEPOIS dos spans (mesma ordem do TextLayerBuilder oficial)
     const end = document.createElement("div");
     end.className = "endOfContent";
