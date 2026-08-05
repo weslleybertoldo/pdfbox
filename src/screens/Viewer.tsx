@@ -280,11 +280,29 @@ const Viewer = () => {
     }
   };
 
-  /** Abre bytes de qualquer origem (picker, intent externo, ResultPanel). */
+  /**
+   * Abre bytes de qualquer origem (picker, intent externo, ResultPanel).
+   * ATÔMICO: parseia PRIMEIRO (sem tocar em nenhum estado) e só comita a
+   * troca com o parse ok — bytes corrompidos rejeitam AQUI e o arquivo
+   * anterior (header, conteúdo, Compartilhar, anotações) fica 100% intacto.
+   */
   const openBytes = async (bytes: Uint8Array, fileName: string, mimeType: string) => {
     // .slice() garante Uint8Array<ArrayBuffer> (BlobPart) e evita o detach
     // do buffer pelo worker do pdf.js (loadPdf também copia internamente)
     const b = new Blob([bytes.slice()], { type: mimeType });
+    let next: { doc: PdfDoc | null; docxHtml: string | null; imgUrl: string | null };
+    if (isDocxFile(fileName, mimeType)) {
+      // sanitizeHtml: o HTML vai pro DOM principal (contentEditable), sem o
+      // iframe sandbox da conversão — scripts/on*/refs externas caem antes
+      const html = sanitizeHtml(await docxToHtml(new File([b], fileName)));
+      next = { doc: null, imgUrl: null, docxHtml: html };
+    } else if (mimeType.startsWith("image/")) {
+      next = { doc: null, docxHtml: null, imgUrl: URL.createObjectURL(b) };
+    } else {
+      next = { imgUrl: null, docxHtml: null, doc: await loadPdf(bytes) };
+    }
+    // ── commit (parse ok): os efeitos de cleanup destroem o doc antigo
+    // (destroyPdf) e revogam o imgUrl antigo quando doc/imgUrl mudam
     setName(fileName);
     setBlob(b);
     setZoom(1);
@@ -292,21 +310,9 @@ const Viewer = () => {
     setEditing(false);
     setResult(null);
     exitAnnotating(); // troca de arquivo descarta anotações em andamento
-    if (isDocxFile(fileName, mimeType)) {
-      setDoc(null);
-      setImgUrl(null);
-      // sanitizeHtml: o HTML vai pro DOM principal (contentEditable), sem o
-      // iframe sandbox da conversão — scripts/on*/refs externas caem antes
-      setDocxHtml(sanitizeHtml(await docxToHtml(new File([b], fileName))));
-    } else if (mimeType.startsWith("image/")) {
-      setDoc(null);
-      setDocxHtml(null);
-      setImgUrl(URL.createObjectURL(b));
-    } else {
-      setImgUrl(null);
-      setDocxHtml(null);
-      setDoc(await loadPdf(bytes));
-    }
+    setDoc(next.doc);
+    setDocxHtml(next.docxHtml);
+    setImgUrl(next.imgUrl);
     // abriu com sucesso (qualquer origem) → registra no histórico do viewer
     void addRecent("viewer", { name: fileName, mime: mimeType, blob: b });
   };
