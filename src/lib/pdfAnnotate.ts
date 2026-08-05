@@ -1,13 +1,15 @@
-import { LineCapStyle, PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { LineCapStyle, PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
 
 /**
  * Anotações do viewer de PDF (modo lápis).
  *
- * Sistema de coordenadas: PONTOS PDF da página com origem no TOPO-esquerda
- * (mesma orientação do canvas/tela). Normalizamos ao criar — coordenada CSS
- * dividida pela escala CSS vigente da página — então zoom durante a anotação
- * não corrompe posições. Só na EXPORTAÇÃO invertemos o eixo Y (o PDF usa
- * origem em baixo-esquerda): yPdf = alturaDaPágina - yTopo.
+ * Sistema de coordenadas: PONTOS PDF da página COMO EXIBIDA com origem no
+ * TOPO-esquerda (mesma orientação do canvas/tela). Normalizamos ao criar —
+ * coordenada CSS dividida pela escala CSS vigente da página — então zoom
+ * durante a anotação não corrompe posições. Na EXPORTAÇÃO convertemos pro
+ * espaço da PÁGINA do PDF (origem baixo-esquerda, y pra cima) levando em
+ * conta o /Rotate: o viewport do pdf.js exibe a página já rotacionada, mas o
+ * pdf-lib desenha no espaço sem rotação — ver displayedToPage.
  */
 export type PdfAnnotation =
   | { kind: "text"; x: number; y: number; text: string; size: number; color: string }
@@ -85,6 +87,36 @@ export const winAnsiSafe = (text: string): string =>
   [...text].map((ch) => (ch.charCodeAt(0) <= 0xff ? ch : "?")).join("");
 
 /**
+ * Espaço EXIBIDO → espaço da PÁGINA, compensando o /Rotate.
+ *
+ * Exibido: como o pdf.js mostra a página (rotação aplicada), origem
+ * topo-esquerda, y pra baixo — pra /Rotate 90/270 a largura exibida é a
+ * ALTURA real da página. Página: espaço em que o pdf-lib desenha, origem
+ * baixo-esquerda, y pra cima, dimensões reais `w`×`h` (page.getSize()).
+ * Derivação: /Rotate gira a página em sentido HORÁRIO na exibição; mapeamos
+ * o ponto exibido de volta desfazendo o giro (validado empiricamente no
+ * harness com /Rotate 90 e 270 — pixel do highlight sobre o marco visual).
+ */
+export function displayedToPage(
+  x: number,
+  y: number,
+  rotation: number,
+  w: number,
+  h: number,
+): { x: number; y: number } {
+  switch (((rotation % 360) + 360) % 360) {
+    case 90:
+      return { x: y, y: x };
+    case 180:
+      return { x: w - x, y };
+    case 270:
+      return { x: w - y, y: h - x };
+    default:
+      return { x, y: h - y };
+  }
+}
+
+/**
  * Gera um NOVO PDF com as anotações desenhadas por cima do conteúdo original
  * (drawText/drawSvgPath/drawRectangle do pdf-lib — NÃO re-renderiza páginas
  * como imagem, então o texto original continua selecionável/extraível).
@@ -100,31 +132,47 @@ export async function annotatePdf(
     if (list.length === 0) continue;
     if (pageNum < 1 || pageNum > pageCount) throw new Error(`página inválida: ${pageNum}`);
     const page = doc.getPage(pageNum - 1);
-    const { height } = page.getSize();
+    const { width, height } = page.getSize();
+    // /Rotate: o overlay capturou as coords no espaço EXIBIDO (rotacionado)
+    const rot = ((page.getRotation().angle % 360) + 360) % 360;
+    const toPage = (x: number, y: number) => displayedToPage(x, y, rot, width, height);
     for (const a of list) {
       const { r, g, b } = hexToRgb01(a.color);
       const color = rgb(r, g, b);
       if (a.kind === "text") {
+        // drawText posiciona pela linha de base — mesma âncora do overlay;
+        // rotate acompanha o /Rotate pro texto ficar reto na VISUALIZAÇÃO
+        const p = toPage(a.x, a.y);
         page.drawText(winAnsiSafe(a.text), {
-          x: a.x,
-          y: height - a.y, // drawText posiciona pela linha de base — mesma âncora do overlay
+          x: p.x,
+          y: p.y,
           size: a.size,
           font,
           color,
+          rotate: degrees(rot),
         });
       } else if (a.kind === "highlight") {
+        // retângulo exibido → página: transforma 2 cantos opostos e re-deriva
+        // (múltiplos de 90° preservam o alinhamento aos eixos)
+        const p1 = toPage(a.x, a.y);
+        const p2 = toPage(a.x + a.w, a.y + a.h);
         page.drawRectangle({
-          x: a.x,
-          y: height - a.y - a.h,
-          width: a.w,
-          height: a.h,
+          x: Math.min(p1.x, p2.x),
+          y: Math.min(p1.y, p2.y),
+          width: Math.abs(p2.x - p1.x),
+          height: Math.abs(p2.y - p1.y),
           color,
           opacity: HIGHLIGHT_ALPHA,
         });
       } else {
         // drawSvgPath interpreta o path com Y crescendo pra BAIXO a partir de
-        // (x, y) — ancorando em (0, height) o path fica nas nossas coordenadas
-        page.drawSvgPath(strokeToSvgPath(a.points), {
+        // (x, y) — ancorando em (0, height) o path fica em coords de página
+        // topo-esquerda; cada ponto é transformado exibido → página antes
+        const pts = a.points.map((p) => {
+          const q = toPage(p.x, p.y);
+          return { x: q.x, y: height - q.y };
+        });
+        page.drawSvgPath(strokeToSvgPath(pts), {
           x: 0,
           y: height,
           borderColor: color,
