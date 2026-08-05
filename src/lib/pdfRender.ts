@@ -187,11 +187,63 @@ function enableGlobalSelectionListeners(): void {
   }, { signal });
 }
 
+type TextContent = Awaited<ReturnType<pdfjs.PDFPageProxy["getTextContent"]>>;
+
+/**
+ * Pós-render: ajusta o `--scale-x` de cada span pela largura REAL renderizada.
+ *
+ * O TextLayer calcula o scaleX medindo o texto num canvas oculto e ASSUME que
+ * o DOM renderiza na mesma proporção. Na WebView Android isso quebra: o
+ * textZoom (segue a escala de fonte do sistema) e fontes de sistema/tema
+ * mudam a largura do texto no DOM mas não a medição no canvas — o span fica
+ * mais curto/largo que os glifos pintados e o destaque do ::selection "para
+ * no meio da linha" mesmo com a cópia completa (bug visto no device). Medir
+ * getBoundingClientRect() depois do layout e reescalar fecha o descompasso,
+ * qualquer que seja a causa do desvio. Leituras e escritas em fases separadas
+ * (um único layout).
+ */
+function correctSpanWidths(
+  textContent: TextContent,
+  divs: HTMLElement[],
+  container: HTMLElement,
+  viewport: pdfjs.PageViewport,
+): void {
+  const sideways = viewport.rotation % 180 !== 0; // layer rodado 90/270
+  const containerSpan = sideways ? container.offsetHeight : container.offsetWidth;
+  if (!containerSpan) return; // fora do DOM/sem layout → nada a medir
+  // transform de ancestral (ex.: scale() do pinch em andamento) entra no rect;
+  // o fator é uniforme, então dá pra dividir fora usando o próprio container
+  const ancestorScale = container.getBoundingClientRect().width / containerSpan;
+  if (!(ancestorScale > 0)) return;
+  const pageScale = viewport.scale * (viewport.userUnit ?? 1);
+  const fixes: [HTMLElement, number][] = [];
+  const n = Math.min(textContent.items.length, divs.length); // 1:1 por índice
+  for (let i = 0; i < n; i++) {
+    const item = textContent.items[i];
+    // mesmo predicado do shouldScaleText do TextLayer (1 char não estica)
+    if (!("str" in item) || item.str.length <= 1) continue;
+    if (textContent.styles[item.fontName]?.vertical) continue;
+    const div = divs[i];
+    if (div.style.getPropertyValue("--rotate")) continue; // texto em ângulo: AABB não mede largura
+    const target = item.width * pageScale; // largura dos glifos no canvas (px CSS)
+    if (!(target > 1)) continue;
+    const r = div.getBoundingClientRect();
+    const w = (sideways ? r.height : r.width) / ancestorScale;
+    if (!(w > 0)) continue;
+    const ratio = target / w;
+    if (Math.abs(ratio - 1) < 0.01) continue; // DOM ≈ medição (browsers desktop)
+    const cur = parseFloat(div.style.getPropertyValue("--scale-x")) || 1;
+    fixes.push([div, cur * ratio]);
+  }
+  for (const [div, sx] of fixes) div.style.setProperty("--scale-x", String(sx));
+}
+
 /**
  * Text layer (seleção/cópia de texto): spans transparentes posicionados sobre
  * o canvas da página. `container` deve ser um `.textLayer` (CSS em index.css)
- * absoluto sobre o canvas, e `viewport` a MESMA viewport CSS do canvas (escala
- * lógica, SEM devicePixelRatio) — `--scale-factor` com DPR desalinharia o texto.
+ * absoluto sobre o canvas E JÁ NO DOM (correctSpanWidths mede layout), e
+ * `viewport` a MESMA viewport CSS do canvas (escala lógica, SEM
+ * devicePixelRatio) — `--scale-factor` com DPR desalinharia o texto.
  * Retorna handle com cancel() pro descarte da virtualização (também remove o
  * layer do registro de seleção global).
  */
@@ -202,12 +254,17 @@ export function renderTextLayer(
 ): { promise: Promise<unknown>; cancel: () => void } {
   container.style.setProperty("--scale-factor", String(viewport.scale));
   container.style.setProperty("--user-unit", String(viewport.userUnit ?? 1));
-  const layer = new pdfjs.TextLayer({
-    textContentSource: page.streamTextContent(),
-    container,
-    viewport,
-  });
-  const promise = layer.render().then(() => {
+  let layer: pdfjs.TextLayer | undefined;
+  let cancelled = false;
+  const promise = (async () => {
+    // getTextContent (não streamTextContent): os MESMOS items alimentam o
+    // TextLayer e a correção de largura pós-render (items ↔ textDivs 1:1)
+    const textContent = await page.getTextContent();
+    if (cancelled) return;
+    layer = new pdfjs.TextLayer({ textContentSource: textContent, container, viewport });
+    await layer.render();
+    if (cancelled) return;
+    correctSpanWidths(textContent, layer.textDivs, container, viewport);
     // endOfContent DEPOIS dos spans (mesma ordem do TextLayerBuilder oficial)
     const end = document.createElement("div");
     end.className = "endOfContent";
@@ -215,11 +272,12 @@ export function renderTextLayer(
     container.addEventListener("mousedown", () => container.classList.add("selecting"));
     textLayers.set(container, end);
     enableGlobalSelectionListeners();
-  });
+  })();
   return {
     promise,
     cancel: () => {
-      layer.cancel();
+      cancelled = true;
+      layer?.cancel();
       unregisterTextLayer(container);
     },
   };
