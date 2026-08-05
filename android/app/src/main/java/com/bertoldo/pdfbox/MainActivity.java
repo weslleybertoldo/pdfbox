@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
     registerPlugin(MediaSaverPlugin.class);
     registerPlugin(VideoCompressorPlugin.class);
     registerPlugin(ApkInstallerPlugin.class);
+    registerPlugin(IntentReceiverPlugin.class);
     super.onCreate(savedInstanceState);
   }
 }
