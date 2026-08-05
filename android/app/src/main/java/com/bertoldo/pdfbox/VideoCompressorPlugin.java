@@ -33,6 +33,12 @@ public class VideoCompressorPlugin extends Plugin {
 
   private static final String TAG = "VideoCompressor";
 
+  // Handler único da instância: permite que handleOnDestroy() cancele qualquer
+  // poll/transformer pendente sem depender de referências locais do método em execução.
+  private final Handler mainHandler = new Handler(Looper.getMainLooper());
+  private volatile Transformer activeTransformer;
+  private volatile AtomicBoolean activePolling;
+
   /** Abre o picker nativo de vídeo (ACTION_OPEN_DOCUMENT); o vídeo nunca trafega pelo JS. */
   @PluginMethod
   public void pickAndCompress(PluginCall call) {
@@ -59,9 +65,14 @@ public class VideoCompressorPlugin extends Plugin {
     String mode = call.getString("mode", "media");
     int height = "leve".equals(mode) ? 1080 : "forte".equals(mode) ? 480 : 720;
 
-    long inputSize = -1;
+    // 0 = tamanho desconhecido (fd indisponível ou getLength() == UNKNOWN_LENGTH);
+    // o wrapper TS documenta essa convenção pro consumidor.
+    long inputSize = 0;
     try (AssetFileDescriptor fd = getContext().getContentResolver().openAssetFileDescriptor(input, "r")) {
-      if (fd != null) inputSize = fd.getLength();
+      if (fd != null) {
+        long len = fd.getLength();
+        inputSize = len == AssetFileDescriptor.UNKNOWN_LENGTH ? 0 : len;
+      }
     } catch (Exception e) {
       Log.e(TAG, "falha ao ler tamanho do vídeo de entrada", e);
     }
@@ -74,10 +85,10 @@ public class VideoCompressorPlugin extends Plugin {
     // volatile via AtomicBoolean: garante que o poll pare assim que onCompleted/onError disparar,
     // mesmo que getProgress() ainda reporte um estado "disponível" na mesma janela de 400ms.
     AtomicBoolean polling = new AtomicBoolean(true);
-    Handler handler = new Handler(Looper.getMainLooper());
+    activePolling = polling;
 
     // Transformer precisa ser criado e iniciado na mesma thread/looper (aqui, a main).
-    handler.post(() -> {
+    mainHandler.post(() -> {
       try {
         EditedMediaItem item = new EditedMediaItem.Builder(MediaItem.fromUri(input))
             .setEffects(new Effects(
@@ -92,6 +103,7 @@ public class VideoCompressorPlugin extends Plugin {
               @Override
               public void onCompleted(Composition composition, ExportResult exportResult) {
                 polling.set(false);
+                activeTransformer = null;
                 JSObject ret = new JSObject();
                 ret.put("path", outFile.getAbsolutePath());
                 ret.put("inputSize", inputSize);
@@ -102,23 +114,26 @@ public class VideoCompressorPlugin extends Plugin {
               @Override
               public void onError(Composition composition, ExportResult exportResult, ExportException exception) {
                 polling.set(false);
+                activeTransformer = null;
                 Log.e(TAG, "erro na compressão de vídeo", exception);
                 call.reject("Erro ao comprimir o vídeo");
               }
             })
             .build();
 
+        activeTransformer = transformer;
         transformer.start(item, outFile.getAbsolutePath());
-        pollProgress(transformer, handler, polling);
+        pollProgress(transformer, polling);
       } catch (Exception e) {
         polling.set(false);
+        activeTransformer = null;
         Log.e(TAG, "falha ao iniciar a compressão", e);
         call.reject("Erro ao iniciar a compressão do vídeo");
       }
     });
   }
 
-  private void pollProgress(Transformer transformer, Handler handler, AtomicBoolean polling) {
+  private void pollProgress(Transformer transformer, AtomicBoolean polling) {
     ProgressHolder holder = new ProgressHolder();
     Runnable poll = new Runnable() {
       @Override
@@ -130,9 +145,30 @@ public class VideoCompressorPlugin extends Plugin {
           data.put("percent", holder.progress);
           notifyListeners("compressProgress", data);
         }
-        if (polling.get()) handler.postDelayed(this, 400);
+        if (polling.get()) mainHandler.postDelayed(this, 400);
       }
     };
-    handler.post(poll);
+    mainHandler.post(poll);
+  }
+
+  /**
+   * App/Activity destruído no meio de uma compressão: para o poll, limpa a fila do
+   * Handler e cancela o Transformer em andamento pra não deixar nada órfão rodando
+   * em background sem call pra resolver.
+   */
+  @Override
+  protected void handleOnDestroy() {
+    if (activePolling != null) activePolling.set(false);
+    mainHandler.removeCallbacksAndMessages(null);
+    Transformer transformer = activeTransformer;
+    if (transformer != null) {
+      try {
+        transformer.cancel();
+      } catch (Exception e) {
+        Log.e(TAG, "erro ao cancelar transformer no destroy", e);
+      }
+      activeTransformer = null;
+    }
+    super.handleOnDestroy();
   }
 }

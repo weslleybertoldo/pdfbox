@@ -4,6 +4,7 @@ import { Share } from "@capacitor/share";
 import type { CompressMode } from "./convert/compress";
 
 interface VideoCompressorPlugin {
+  /** inputSize == 0 significa "desconhecido" (o nativo não conseguiu ler o tamanho do arquivo de origem). */
   pickAndCompress(options: { mode: CompressMode }): Promise<{
     path: string;
     inputSize: number;
@@ -12,7 +13,7 @@ interface VideoCompressorPlugin {
   addListener(
     event: "compressProgress",
     fn: (d: { percent: number }) => void,
-  ): Promise<{ remove: () => void }>;
+  ): Promise<{ remove: () => Promise<void> }>;
 }
 const VideoCompressor = registerPlugin<VideoCompressorPlugin>("VideoCompressor");
 
@@ -36,7 +37,7 @@ export async function pickAndCompressVideo(
   try {
     return await VideoCompressor.pickAndCompress({ mode });
   } finally {
-    listener.remove();
+    await listener.remove();
   }
 }
 
