@@ -1,10 +1,14 @@
 import { useState } from "react";
 import { Check, Download, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
 import { CURRENT_VERSION } from "./UpdateChecker";
 import { isNewerVersion } from "../lib/version";
 import { downloadAndInstall } from "../lib/apkUpdater";
 
-type Result = { hasUpdate: boolean; url?: string; version?: string };
+type Result =
+  | { status: "update"; url: string; version: string }
+  | { status: "latest" }
+  | { status: "error" }; // rede falhou ≠ "sem update"
 
 const FooterVersion = () => {
   const [checking, setChecking] = useState(false);
@@ -25,22 +29,24 @@ const FooterVersion = () => {
       const remote = (release.tag_name || "").replace(/^v/, "");
       if (isNewerVersion(remote, CURRENT_VERSION)) {
         const apk = (release.assets || []).find((a: { name: string }) => a.name.endsWith(".apk"));
-        setResult({ hasUpdate: true, url: apk?.browser_download_url || release.html_url, version: remote });
-      } else setResult({ hasUpdate: false });
+        setResult({ status: "update", url: apk?.browser_download_url || release.html_url, version: remote });
+      } else setResult({ status: "latest" });
     } catch {
-      setResult({ hasUpdate: false });
+      setResult({ status: "error" });
     } finally {
       setChecking(false);
     }
   };
 
   const handleDownload = async () => {
-    if (!result?.url) return;
+    if (result?.status !== "update") return;
     setNeedsPerm(false);
     setProgress(0);
     try {
       const r = await downloadAndInstall(result.url, setProgress);
       if (r === "permission") setNeedsPerm(true);
+    } catch {
+      toast.error("Falha no download da atualização");
     } finally {
       setProgress(null);
     }
@@ -60,7 +66,11 @@ const FooterVersion = () => {
       </button>
       {result && (
         <div>
-          {result.hasUpdate ? (
+          {result.status === "error" ? (
+            <p className="text-[10px] text-amber-400">
+              Não foi possível verificar (sem internet?)
+            </p>
+          ) : result.status === "update" ? (
             progress !== null ? (
               <div className="max-w-[200px] mx-auto">
                 <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
