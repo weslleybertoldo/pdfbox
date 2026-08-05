@@ -19,16 +19,23 @@ const CSP_META =
   `content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:">`;
 
 /**
- * Strip de refs externas via regex, ANTES do parse (defesa em profundidade;
- * a CSP acima e o sweep DOM abaixo são as outras camadas). O regex é o que
- * impede até a INTENÇÃO de request no parse do doc.write — <link>/<meta>/<base>
- * caem inteiros porque dns-prefetch/preconnect e meta refresh não são
- * governados por CSP.
+ * Strip de refs externas + script via regex, ANTES do parse (defesa em
+ * profundidade; a CSP acima e o sweep DOM abaixo são as outras camadas). O
+ * regex é o que impede até a INTENÇÃO de request no parse do doc.write —
+ * <link>/<meta>/<base> caem inteiros porque dns-prefetch/preconnect e meta
+ * refresh não são governados por CSP.
+ *
+ * Exportada: o viewer de Word injeta o HTML do mammoth no DOM PRINCIPAL
+ * (contentEditable, sem iframe sandbox), então além das refs externas os
+ * handlers on*= e URLs javascript: precisam cair aqui — na WebView do
+ * Capacitor, script na origem do app alcança a bridge nativa.
  */
-function sanitizeHtml(html: string): string {
+export function sanitizeHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<(link|meta|base)\b[^>]*>/gi, "")
+    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, " ")
+    .replace(/(src|href|poster|background|data)\s*=\s*["']\s*javascript:[^"']*["']/gi, "")
     .replace(/(src|href|poster|background|data)\s*=\s*["'](?:https?:)?\/\/[^"']*["']/gi, "")
     .replace(/\b(?:image)?srcset\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
     .replace(/url\(\s*(?:https?:)?\/\/[^)]*\)/gi, "none")

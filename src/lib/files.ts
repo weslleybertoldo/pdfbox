@@ -6,6 +6,14 @@ import { blobToBase64 } from "./mediaSaver";
 /** accept de imagem padrão para pickFiles (conversão e compressão de imagem). */
 export const IMG_ACCEPT = "image/png,image/jpeg,image/webp";
 
+/** MIME de .docx (viewer/editor de Word, intent "Abrir com", ResultPanel). */
+export const DOCX_MIME =
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+/** O arquivo é um Word .docx? (por MIME ou extensão — intents nem sempre têm os dois) */
+export const isDocxFile = (name: string, mimeType: string): boolean =>
+  mimeType === DOCX_MIME || /\.docx$/i.test(name);
+
 /** Abre o file picker e devolve os arquivos escolhidos. */
 export function pickFiles(accept: string, multiple = false): Promise<File[]> {
   return new Promise((resolve) => {

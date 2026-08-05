@@ -5,6 +5,24 @@
 html, body, #root { height: 100%; }
 body { @apply bg-slate-950 text-slate-100 antialiased; }
 
+/* Viewer/editor de Word: o preflight do Tailwind zera headings/listas/margens,
+   então o HTML do mammoth precisa de estilos próprios pra parecer documento. */
+.docx-doc { word-break: break-word; }
+.docx-doc h1, .docx-doc h2, .docx-doc h3,
+.docx-doc h4, .docx-doc h5, .docx-doc h6 { font-weight: 700; margin: 1em 0 0.5em; }
+.docx-doc h1 { font-size: 1.7em; }
+.docx-doc h2 { font-size: 1.4em; }
+.docx-doc h3 { font-size: 1.2em; }
+.docx-doc p { margin: 0.5em 0; }
+.docx-doc ul { list-style: disc; margin: 0.5em 0; padding-left: 1.5em; }
+.docx-doc ol { list-style: decimal; margin: 0.5em 0; padding-left: 1.5em; }
+.docx-doc strong, .docx-doc b { font-weight: 700; }
+.docx-doc em, .docx-doc i { font-style: italic; }
+.docx-doc a { color: #1d4ed8; text-decoration: underline; }
+.docx-doc img { max-width: 100%; height: auto; }
+.docx-doc table { border-collapse: collapse; margin: 0.5em 0; }
+.docx-doc td, .docx-doc th { border: 1px solid #cbd5e1; padding: 2px 6px; }
+
 /* Text layer do pdf.js v6 (seleção/cópia no viewer) — CSS mínimo extraído de
    pdfjs-dist/web/pdf_viewer.css (importar o arquivo inteiro traria annotation/
    editor layers que não usamos). As dimensões do container e o font-size dos

@@ -2,7 +2,7 @@ import { Download, Eye, Share2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { saveToDevice } from "../lib/mediaSaver";
-import { shareBlob, formatBytes } from "../lib/files";
+import { shareBlob, formatBytes, DOCX_MIME } from "../lib/files";
 import { setOpenFile } from "../lib/openFileStore";
 
 export interface ResultFile {
@@ -11,9 +11,11 @@ export interface ResultFile {
   collection: "downloads" | "images" | "video";
 }
 
-/** O viewer só renderiza PDF e imagem — docx/xlsx não ganham "Visualizar". */
+/** O viewer renderiza PDF, imagem e Word — xlsx não ganha "Visualizar". */
 const isViewable = (f: ResultFile) =>
-  f.blob.type === "application/pdf" || f.blob.type.startsWith("image/");
+  f.blob.type === "application/pdf" ||
+  f.blob.type.startsWith("image/") ||
+  f.blob.type === DOCX_MIME;
 
 /** sizeBefore: mostra "antes → depois" (compressões). */
 const ResultPanel = ({ files, sizeBefore }: { files: ResultFile[]; sizeBefore?: number }) => {

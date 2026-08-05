@@ -18,7 +18,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- "Abrir com" — PDFs e imagens de outros apps (IntentReceiverPlugin) -->
+            <!-- "Abrir com" — PDFs, imagens e Word (.docx) de outros apps (IntentReceiverPlugin) -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -30,6 +30,11 @@
                 <data android:mimeType="image/png" />
                 <data android:mimeType="image/jpeg" />
                 <data android:mimeType="image/webp" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
             </intent-filter>
         </activity>
 
