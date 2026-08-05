@@ -1,5 +1,10 @@
 apply plugin: 'com.android.application'
 
+// versão única: package.json é a fonte da verdade (mesma exibida no app via __APP_VERSION__)
+def packageJson = new groovy.json.JsonSlurper().parseText(rootProject.file('../package.json').text)
+def appVersionName = packageJson.version
+def appVersionCode = packageJson.version.tokenize('.').collect { it.toInteger() }.inject(0) { acc, v -> acc * 1000 + v }
+
 def keystoreProperties = new Properties()
 def keystorePropertiesFile = rootProject.file('key.properties')
 if (keystorePropertiesFile.exists()) {
@@ -13,8 +18,8 @@ android {
         applicationId "com.bertoldo.pdfbox"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode appVersionCode
+        versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
