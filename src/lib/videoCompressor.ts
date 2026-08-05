@@ -1,6 +1,4 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
-import { Directory, Filesystem } from "@capacitor/filesystem";
-import { Share } from "@capacitor/share";
 import type { CompressMode } from "./convert/compress";
 
 interface VideoCompressorPlugin {
@@ -39,13 +37,4 @@ export async function pickAndCompressVideo(
   } finally {
     await listener.remove();
   }
-}
-
-/** Compartilha o mp4 comprimido direto do cache nativo. */
-export async function shareCompressedVideo(path: string): Promise<void> {
-  const { uri } = await Filesystem.getUri({
-    path: path.split("/").pop()!,
-    directory: Directory.Cache,
-  });
-  await Share.share({ files: [uri] });
 }

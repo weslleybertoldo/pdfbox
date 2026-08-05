@@ -6,7 +6,7 @@ import {
   Undo2, X, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { toast } from "sonner";
-import { pickFiles, shareBlob, DOCX_MIME, isDocxFile } from "../lib/files";
+import { pickFiles, DOCX_MIME, isDocxFile } from "../lib/files";
 import {
   loadPdf,
   renderPage,
@@ -27,6 +27,7 @@ import { sanitizeHtml } from "../lib/convert/htmlPipeline";
 import { editedDomToDocx } from "../lib/convert/htmlToDocx";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
 import RecentsButton from "../components/RecentsButton";
+import ShareMenu from "../components/ShareMenu";
 
 /** Botão da toolbar de edição: preventDefault no mousedown preserva a seleção. */
 const ToolBtn = ({ label, onClick, children }: {
@@ -1060,11 +1061,14 @@ const Viewer = () => {
               <Pencil size={18} />
             </button>
           )}
-          {hasContent && !editing && !annotating && (
-            <button type="button" aria-label="Compartilhar"
-              onClick={() => blob && name && shareBlob(blob, name)}>
-              <Share2 size={18} />
-            </button>
+          {hasContent && !editing && !annotating && blob && name && (
+            <ShareMenu payload={{ kind: "blobs", files: [{ blob, name }] }}>
+              {(open) => (
+                <button type="button" aria-label="Compartilhar" onClick={open}>
+                  <Share2 size={18} />
+                </button>
+              )}
+            </ShareMenu>
           )}
           {editing && (
             <>

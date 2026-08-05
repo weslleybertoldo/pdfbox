@@ -3,9 +3,10 @@ import { Link } from "react-router-dom";
 import { ArrowLeft, Download, Share2 } from "lucide-react";
 import { toast } from "sonner";
 import ProgressBar from "../components/ProgressBar";
+import ShareMenu from "../components/ShareMenu";
 import { formatBytes } from "../lib/files";
 import { saveFileFromPath } from "../lib/mediaSaver";
-import { isNativeAndroid, pickAndCompressVideo, shareCompressedVideo } from "../lib/videoCompressor";
+import { isNativeAndroid, pickAndCompressVideo } from "../lib/videoCompressor";
 import type { CompressMode } from "../lib/convert/compress";
 
 const MODES: { id: CompressMode; label: string; desc: string }[] = [
@@ -52,18 +53,6 @@ const CompressVideo = () => {
     }
   };
 
-  const handleShare = async () => {
-    if (!result || busy) return;
-    setBusy(true);
-    try {
-      await shareCompressedVideo(result.path);
-    } catch {
-      /* usuário fechou a share sheet */
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <div className="p-4 max-w-lg mx-auto space-y-4">
       <Link to="/" className="inline-flex items-center gap-1 text-sm text-slate-400">
@@ -102,10 +91,17 @@ const CompressVideo = () => {
               className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-600 rounded-lg text-sm disabled:opacity-40">
               <Download size={16} /> Salvar
             </button>
-            <button type="button" onClick={handleShare} disabled={busy}
-              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-700 rounded-lg text-sm disabled:opacity-40">
-              <Share2 size={16} /> Compartilhar
-            </button>
+            <ShareMenu payload={{
+              kind: "path", path: result.path,
+              fileName: `video-comprimido-${Date.now()}.mp4`, mimeType: "video/mp4",
+            }}>
+              {(open) => (
+                <button type="button" onClick={open} disabled={busy}
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-700 rounded-lg text-sm disabled:opacity-40">
+                  <Share2 size={16} /> Compartilhar
+                </button>
+              )}
+            </ShareMenu>
           </div>
         </div>
       )}

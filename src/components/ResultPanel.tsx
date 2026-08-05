@@ -2,8 +2,9 @@ import { Download, Eye, Share2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { saveToDevice } from "../lib/mediaSaver";
-import { shareBlob, formatBytes, DOCX_MIME } from "../lib/files";
+import { formatBytes, DOCX_MIME } from "../lib/files";
 import { setOpenFile } from "../lib/openFileStore";
+import ShareMenu from "./ShareMenu";
 
 export interface ResultFile {
   blob: Blob;
@@ -36,11 +37,6 @@ const ResultPanel = ({ files, sizeBefore }: { files: ResultFile[]; sizeBefore?: 
       toast.warning(`${ok} salvos, ${fail} falharam`);
     }
   };
-  const handleShare = async () => {
-    try {
-      for (const f of files) await shareBlob(f.blob, f.name);
-    } catch { /* usuário fechou a share sheet */ }
-  };
   // múltiplos arquivos: visualiza o primeiro (v1 — simples)
   const handleView = async () => {
     const f = files[0];
@@ -69,10 +65,14 @@ const ResultPanel = ({ files, sizeBefore }: { files: ResultFile[]; sizeBefore?: 
           className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-blue-600 rounded-lg text-sm">
           <Download size={16} /> Salvar
         </button>
-        <button type="button" onClick={handleShare}
-          className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-700 rounded-lg text-sm">
-          <Share2 size={16} /> Compartilhar
-        </button>
+        <ShareMenu payload={{ kind: "blobs", files: files.map((f) => ({ blob: f.blob, name: f.name })) }}>
+          {(open) => (
+            <button type="button" onClick={open}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-700 rounded-lg text-sm">
+              <Share2 size={16} /> Compartilhar
+            </button>
+          )}
+        </ShareMenu>
         {isViewable(files[0]) && (
           <button type="button" onClick={handleView}
             className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-700 rounded-lg text-sm">
