@@ -12,6 +12,8 @@ import {
   renderPage,
   renderTextLayer,
   destroyPdf,
+  isPasswordError,
+  isWrongPasswordError,
   type PdfDoc,
 } from "../lib/pdfRender";
 import {
@@ -335,7 +337,12 @@ const Viewer = () => {
    * troca com o parse ok — bytes corrompidos rejeitam AQUI e o arquivo
    * anterior (header, conteúdo, Compartilhar, anotações) fica 100% intacto.
    */
-  const openBytes = async (bytes: Uint8Array, fileName: string, mimeType: string) => {
+  const openBytes = async (
+    bytes: Uint8Array,
+    fileName: string,
+    mimeType: string,
+    password?: string,
+  ) => {
     // .slice() garante Uint8Array<ArrayBuffer> (BlobPart) e evita o detach
     // do buffer pelo worker do pdf.js (loadPdf também copia internamente)
     const b = new Blob([bytes.slice()], { type: mimeType });
@@ -348,7 +355,7 @@ const Viewer = () => {
     } else if (mimeType.startsWith("image/")) {
       next = { doc: null, docxHtml: null, imgUrl: URL.createObjectURL(b) };
     } else {
-      next = { imgUrl: null, docxHtml: null, doc: await loadPdf(bytes) };
+      next = { imgUrl: null, docxHtml: null, doc: await loadPdf(bytes, password) };
     }
     // ── commit (parse ok): os efeitos de cleanup destroem o doc antigo
     // (destroyPdf) e revogam o imgUrl antigo quando doc/imgUrl mudam
@@ -366,13 +373,56 @@ const Viewer = () => {
     void addRecent("viewer", { name: fileName, mime: mimeType, blob: b });
   };
 
+  // ── PDF protegido por senha ──────────────────────────────────────────────
+  // loadPdf rejeita com PasswordException → dialog pede a senha e re-tenta o
+  // MESMO openBytes com ela (bytes ficam guardados no estado do dialog).
+  // Senha errada (code 2) reabre o dialog com a mensagem de erro; Cancelar
+  // descarta tudo — openBytes é atômico, então o arquivo anterior segue
+  // intacto em qualquer um dos caminhos.
+  const [pwdAsk, setPwdAsk] = useState<
+    { bytes: Uint8Array; name: string; mime: string; wrong: boolean } | null
+  >(null);
+  const [pwdValue, setPwdValue] = useState("");
+
+  /** openBytes + tratamento de erro (toast) e de senha (dialog). Não lança. */
+  const tryOpenBytes = async (
+    bytes: Uint8Array,
+    fileName: string,
+    mimeType: string,
+    password?: string,
+  ) => {
+    try {
+      await openBytes(bytes, fileName, mimeType, password);
+      setPwdAsk(null); // sucesso: fecha o dialog (no retry) e limpa a senha
+      setPwdValue("");
+    } catch (e) {
+      if (isPasswordError(e)) {
+        setPwdAsk({ bytes, name: fileName, mime: mimeType, wrong: isWrongPasswordError(e) });
+        setPwdValue("");
+        return;
+      }
+      setPwdAsk(null);
+      toast.error(`Erro ao abrir: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
+  const submitPwd = () => {
+    if (!pwdAsk || !pwdValue) return;
+    void tryOpenBytes(pwdAsk.bytes, pwdAsk.name, pwdAsk.mime, pwdValue);
+  };
+  const cancelPwd = () => {
+    setPwdAsk(null);
+    setPwdValue("");
+  };
+
   const handleOpen = async () => {
     const [f] = await pickFiles(`application/pdf,${DOCX_MIME},.docx`);
     if (!f) return;
     try {
       const mime = isDocxFile(f.name, f.type) ? DOCX_MIME : "application/pdf";
-      await openBytes(new Uint8Array(await f.arrayBuffer()), f.name, mime);
+      await tryOpenBytes(new Uint8Array(await f.arrayBuffer()), f.name, mime);
     } catch (e) {
+      // tryOpenBytes não lança — só o arrayBuffer() do File chega aqui
       toast.error(`Erro ao abrir: ${e instanceof Error ? e.message : e}`);
     }
   };
@@ -423,9 +473,7 @@ const Viewer = () => {
   useEffect(() => {
     const f = consumeOpenFile();
     if (!f) return;
-    openBytes(f.bytes, f.name, f.mimeType).catch((e) => {
-      toast.error(`Erro ao abrir: ${e instanceof Error ? e.message : e}`);
-    });
+    void tryOpenBytes(f.bytes, f.name, f.mimeType);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.key]);
 
@@ -1324,11 +1372,7 @@ const Viewer = () => {
             <RecentsButton
               category="viewer"
               onPick={async (f) => {
-                try {
-                  await openBytes(new Uint8Array(await f.arrayBuffer()), f.name, f.type);
-                } catch (e) {
-                  toast.error(`Erro ao abrir: ${e instanceof Error ? e.message : e}`);
-                }
+                await tryOpenBytes(new Uint8Array(await f.arrayBuffer()), f.name, f.type);
               }}
             />
           )}
@@ -1569,6 +1613,45 @@ const Viewer = () => {
             className="px-6 py-3 bg-blue-600 rounded-xl text-sm font-medium">
             Escolher arquivo
           </button>
+        </div>
+      )}
+      {pwdAsk && (
+        <div
+          data-pwd-dialog
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-6"
+        >
+          <div className="w-full max-w-xs bg-slate-900 border border-slate-700 rounded-xl p-4 space-y-3">
+            <p className="text-sm font-medium">PDF protegido — digite a senha</p>
+            <p className="text-xs text-slate-400 truncate">{pwdAsk.name}</p>
+            <input
+              type="password"
+              autoFocus
+              value={pwdValue}
+              onChange={(e) => setPwdValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitPwd();
+                if (e.key === "Escape") cancelPwd();
+              }}
+              placeholder="Senha"
+              aria-label="Senha do PDF"
+              className="w-full px-3 py-2 bg-slate-800 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {pwdAsk.wrong && (
+              <p data-pwd-wrong className="text-xs text-red-400">
+                Senha incorreta, tente novamente
+              </p>
+            )}
+            <div className="flex gap-2">
+              <button type="button" onClick={cancelPwd}
+                className="flex-1 py-2 bg-slate-700 rounded-lg text-sm">
+                Cancelar
+              </button>
+              <button type="button" disabled={!pwdValue} onClick={submitPwd}
+                className="flex-1 py-2 bg-blue-600 rounded-lg text-sm font-medium disabled:opacity-40">
+                Abrir
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -1,4 +1,5 @@
 import { LineCapStyle, PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
+import { passwordProtectedError } from "./pdfErrors";
 
 /**
  * Anotações do viewer de PDF (modo lápis).
@@ -126,6 +127,9 @@ export async function annotatePdf(
   annots: AnnotationMap,
 ): Promise<Uint8Array> {
   const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  // PDF cifrado (mesmo owner-only, que o viewer abre sem senha): o pdf-lib não
+  // decifra — save sairia corrompido/erro críptico. Falha com mensagem clara.
+  if (doc.isEncrypted) throw passwordProtectedError();
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const pageCount = doc.getPageCount();
   for (const [pageNum, list] of annots) {

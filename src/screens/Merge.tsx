@@ -8,6 +8,7 @@ import { pickFiles, readFileAsBytes } from "../lib/files";
 import { consumeActionFile, actionFileToFile } from "../lib/actionFile";
 import { addRecent } from "../lib/recents";
 import { mergePdfs } from "../lib/pdfOps";
+import { isPasswordError, PASSWORD_PROTECTED_MSG } from "../lib/pdfErrors";
 
 const Merge = () => {
   const [files, setFiles] = useState<File[]>([]);
@@ -46,7 +47,10 @@ const Merge = () => {
         void addRecent("merge", { name: f.name, mime: f.type || "application/pdf", blob: f });
       }
     } catch (e) {
-      toast.error(`Falha ao juntar: ${e instanceof Error ? e.message : e}`);
+      // PDF protegido: mensagem amigável (o prompt de senha existe só no viewer)
+      toast.error(isPasswordError(e)
+        ? PASSWORD_PROTECTED_MSG
+        : `Falha ao juntar: ${e instanceof Error ? e.message : e}`);
     } finally {
       setBusy(false);
     }

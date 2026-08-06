@@ -9,6 +9,7 @@ import { pickFiles, readFileAsBytes } from "../lib/files";
 import { consumeActionFile, actionFileToFile } from "../lib/actionFile";
 import { addRecent } from "../lib/recents";
 import { compressPdfLight, compressPdfStrong, type CompressMode } from "../lib/convert/compress";
+import { isPasswordError, PASSWORD_PROTECTED_MSG } from "../lib/pdfErrors";
 
 const MODES: { id: CompressMode; label: string; desc: string }[] = [
   { id: "leve", label: "Leve", desc: "Mantém texto selecionável" },
@@ -45,7 +46,10 @@ const CompressPdf = () => {
         name: f.name.replace(/\.pdf$/i, "-comprimido.pdf"), collection: "downloads" }]);
       void addRecent("compress-pdf", { name: f.name, mime: f.type || "application/pdf", blob: f });
     } catch (e) {
-      toast.error(`Falha: ${e instanceof Error ? e.message : e}`);
+      // PDF protegido: mensagem amigável (o prompt de senha existe só no viewer)
+      toast.error(isPasswordError(e)
+        ? PASSWORD_PROTECTED_MSG
+        : `Falha: ${e instanceof Error ? e.message : e}`);
     } finally {
       setProgress(null);
     }

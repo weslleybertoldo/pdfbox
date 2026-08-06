@@ -1,6 +1,7 @@
 import imageCompression from "browser-image-compression";
 import { PDFDocument } from "pdf-lib";
 import { loadPdf, renderPage, canvasToBlob, destroyPdf } from "../pdfRender";
+import { passwordProtectedError } from "../pdfErrors";
 
 export type CompressMode = "leve" | "media" | "forte";
 
@@ -25,6 +26,9 @@ export async function compressImage(
 /** PDF leve: re-save com object streams (mantém texto selecionável). */
 export async function compressPdfLight(bytes: Uint8Array): Promise<Uint8Array> {
   const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  // PDF cifrado: o re-save do pdf-lib sairia corrompido (streams cifrados sem
+  // o /Encrypt) — falha cedo com o erro de senha padronizado
+  if (doc.isEncrypted) throw passwordProtectedError();
   return doc.save({ useObjectStreams: true });
 }
 

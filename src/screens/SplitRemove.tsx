@@ -8,7 +8,9 @@ import RecentsButton from "../components/RecentsButton";
 import { pickFiles, readFileAsBytes } from "../lib/files";
 import { consumeActionFile, actionFileToFile } from "../lib/actionFile";
 import { addRecent } from "../lib/recents";
-import { loadPdf, renderThumbnails, destroyPdf } from "../lib/pdfRender";
+import {
+  loadPdf, renderThumbnails, destroyPdf, isPasswordError, PASSWORD_PROTECTED_MSG,
+} from "../lib/pdfRender";
 import { extractPages } from "../lib/pdfOps";
 import { splitSelection } from "../lib/pageSelection";
 
@@ -39,7 +41,10 @@ const SplitRemove = () => {
       setResult(null);
       void addRecent("pages", { name: f.name, mime: f.type || "application/pdf", blob: f });
     } catch (e) {
-      toast.error(`Erro ao abrir PDF: ${e instanceof Error ? e.message : e}`);
+      // PDF protegido: mensagem amigável (o prompt de senha existe só no viewer)
+      toast.error(isPasswordError(e)
+        ? PASSWORD_PROTECTED_MSG
+        : `Erro ao abrir PDF: ${e instanceof Error ? e.message : e}`);
     } finally {
       setBusy(false);
     }
@@ -79,7 +84,10 @@ const SplitRemove = () => {
       }
       setResult(files);
     } catch (e) {
-      toast.error(`Falha: ${e instanceof Error ? e.message : e}`);
+      // owner-only passa nos thumbnails (pdf.js abre) mas o pdf-lib não decifra
+      toast.error(isPasswordError(e)
+        ? PASSWORD_PROTECTED_MSG
+        : `Falha: ${e instanceof Error ? e.message : e}`);
     } finally {
       setBusy(false);
     }

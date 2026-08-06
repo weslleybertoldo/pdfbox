@@ -8,6 +8,7 @@ import RecentsButton from "../components/RecentsButton";
 import { pickFiles, readFileAsBytes, isDocxFile, DOCX_MIME, IMG_ACCEPT } from "../lib/files";
 import { consumeActionFile, actionFileToFile } from "../lib/actionFile";
 import { addRecent } from "../lib/recents";
+import { isPasswordError, PASSWORD_PROTECTED_MSG } from "../lib/pdfErrors";
 import { pdfToImages } from "../lib/convert/pdfToImages";
 import { imagesToPdf } from "../lib/convert/imagesToPdf";
 import { pdfToDocx } from "../lib/convert/pdfToDocx";
@@ -156,7 +157,10 @@ const Convert = () => {
         void addRecent(`convert:${action}`, { name: f.name, mime: mimeFor(f), blob: f });
       }
     } catch (e) {
-      toast.error(`Falha na conversão: ${e instanceof Error ? e.message : e}`);
+      // PDF protegido: mensagem amigável (o prompt de senha existe só no viewer)
+      toast.error(isPasswordError(e)
+        ? PASSWORD_PROTECTED_MSG
+        : `Falha na conversão: ${e instanceof Error ? e.message : e}`);
     } finally {
       setProgress(null);
     }

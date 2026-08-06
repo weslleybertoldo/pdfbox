@@ -10,15 +10,29 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerUrl; // bundle local, sem CDN
 
 export type PdfDoc = pdfjs.PDFDocumentProxy;
 
+// Helpers de PDF protegido por senha (detecção + mensagem única) — definidos
+// em pdfErrors.ts (sem dependência do pdf.js) e re-exportados aqui por
+// conveniência de quem já importa o pdfRender.
+export {
+  isPasswordError,
+  isWrongPasswordError,
+  PASSWORD_PROTECTED_MSG,
+} from "./pdfErrors";
+
 /**
  * Carrega um PDF a partir dos bytes; quem carrega, destrói via destroyPdf.
  * `.slice()` copia pra um ArrayBuffer novo: o pdf.js transfere (detach) o
  * buffer original pro worker, então sem a cópia uma 2ª chamada com os mesmos
  * `bytes` (ex.: usuário tenta comprimir "média" e depois "forte" na mesma
  * tela) quebra com "ArrayBuffer ... already detached".
+ *
+ * PDF protegido: sem `password` (ou com senha errada) rejeita com
+ * `PasswordException` (code 1 = falta senha, 2 = senha incorreta) — detectar
+ * com isPasswordError/isWrongPasswordError. O viewer pede a senha e re-chama
+ * com ela; as conversões só traduzem pro PASSWORD_PROTECTED_MSG.
  */
-export const loadPdf = (bytes: Uint8Array): Promise<PdfDoc> =>
-  pdfjs.getDocument({ data: bytes.slice() }).promise;
+export const loadPdf = (bytes: Uint8Array, password?: string): Promise<PdfDoc> =>
+  pdfjs.getDocument({ data: bytes.slice(), password }).promise;
 
 /** Libera worker + caches do documento; chamar sempre que terminar de usar o doc. */
 export async function destroyPdf(doc: PdfDoc): Promise<void> {

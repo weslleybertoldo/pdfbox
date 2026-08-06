@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { PDFDocument } from "pdf-lib";
 import { mergePdfs, extractPages } from "./pdfOps";
+import { isPasswordError } from "./pdfErrors";
+import { protectedPdfBytes } from "./pdfErrors.test";
 
 /** Cada página i (0-based) tem largura distinta (100 + i*10) para provar ordem. */
 async function makePdf(pages: number): Promise<Uint8Array> {
@@ -47,5 +49,18 @@ describe("pdfOps", () => {
     await expect(extractPages(await makePdf(3), [0])).rejects.toThrow(
       "página inválida: 0",
     );
+  });
+  // PDF cifrado: o pdf-lib com ignoreEncryption quebraria depois com erro
+  // críptico ("Expected instance of PDFDict…") — o guard falha CEDO com o
+  // erro de senha padronizado, que as telas traduzem pra mensagem amigável.
+  it("mergePdfs: PDF protegido por senha lança erro de senha padronizado", async () => {
+    const err = await mergePdfs([await makePdf(1), protectedPdfBytes()])
+      .then(() => null, (e: unknown) => e);
+    expect(isPasswordError(err)).toBe(true);
+  });
+  it("extractPages: PDF protegido por senha lança erro de senha padronizado", async () => {
+    const err = await extractPages(protectedPdfBytes(), [1])
+      .then(() => null, (e: unknown) => e);
+    expect(isPasswordError(err)).toBe(true);
   });
 });
