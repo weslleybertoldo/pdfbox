@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
   ArrowLeft, Bold, BookOpen, Check, ChevronLeft, ChevronRight, Hand,
-  Highlighter, Italic, List, Pencil, PenLine, ScrollText, Share2, Type,
-  Undo2, X, ZoomIn, ZoomOut,
+  Highlighter, Italic, LayoutGrid, List, Pencil, PenLine, ScrollText, Share2,
+  Type, Undo2, X, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { toast } from "sonner";
 import { pickFiles, DOCX_MIME, isDocxFile } from "../lib/files";
@@ -28,6 +28,7 @@ import { editedDomToDocx } from "../lib/convert/htmlToDocx";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
 import RecentsButton from "../components/RecentsButton";
 import ShareMenu from "../components/ShareMenu";
+import ActionsMenu, { type ViewerFileKind } from "../components/ActionsMenu";
 
 /** Botão da toolbar de edição: preventDefault no mousedown preserva a seleção. */
 const ToolBtn = ({ label, onClick, children }: {
@@ -1060,6 +1061,23 @@ const Viewer = () => {
             <button type="button" aria-label="Anotar" onClick={startAnnotating}>
               <Pencil size={18} />
             </button>
+          )}
+          {hasContent && !editing && !annotating && blob && name && (
+            <ActionsMenu
+              kind={(doc ? "pdf" : imgUrl ? "image" : "docx") as ViewerFileKind}
+              file={{
+                blob,
+                name,
+                mimeType: blob.type ||
+                  (doc ? "application/pdf" : imgUrl ? "image/png" : DOCX_MIME),
+              }}
+            >
+              {(open) => (
+                <button type="button" aria-label="Usar em outra função" title="Usar em outra função" onClick={open}>
+                  <LayoutGrid size={18} />
+                </button>
+              )}
+            </ActionsMenu>
           )}
           {hasContent && !editing && !annotating && blob && name && (
             <ShareMenu payload={{ kind: "blobs", files: [{ blob, name }] }}>

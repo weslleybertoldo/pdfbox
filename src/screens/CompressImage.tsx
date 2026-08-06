@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
 import RecentsButton from "../components/RecentsButton";
 import { pickFiles, IMG_ACCEPT } from "../lib/files";
+import { consumeActionFile, actionFileToFile } from "../lib/actionFile";
 import { addRecent } from "../lib/recents";
 import { compressImage, type CompressMode } from "../lib/convert/compress";
 
@@ -22,6 +23,14 @@ const CompressImage = () => {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ResultFile[] | null>(null);
   const [sizeBefore, setSizeBefore] = useState(0);
+  // arquivo pré-carregado (botão de ações do viewer) — dispensa o picker
+  const [preFile, setPreFile] = useState<File | null>(null);
+
+  // consumo único no mount; tipo errado (não-imagem) é descartado silenciosamente
+  useEffect(() => {
+    const af = consumeActionFile();
+    if (af?.mimeType.startsWith("image/")) setPreFile(actionFileToFile(af));
+  }, []);
 
   /** Comprime (picker ou histórico); sucesso registra a entrada no histórico. */
   const runCompress = async (f: File) => {
@@ -43,6 +52,14 @@ const CompressImage = () => {
     const [f] = await pickFiles(IMG_ACCEPT);
     if (!f) return;
     await runCompress(f);
+  };
+
+  /** Com arquivo pré-carregado, o picker vira "trocar": substitui sem rodar. */
+  const handleSwap = async () => {
+    const [f] = await pickFiles(IMG_ACCEPT);
+    if (!f) return;
+    setPreFile(f);
+    setResult(null);
   };
 
   return (
@@ -73,10 +90,29 @@ const CompressImage = () => {
           </button>
         ))}
       </div>
-      <button type="button" onClick={handlePick} disabled={busy}
-        className="w-full py-3 bg-blue-600 rounded-xl text-sm font-medium disabled:opacity-40">
-        {busy ? "Comprimindo..." : "Escolher imagem"}
-      </button>
+      {preFile && (
+        <div data-preloaded-file
+          className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm truncate">
+          Arquivo: {preFile.name}
+        </div>
+      )}
+      {preFile ? (
+        <>
+          <button type="button" onClick={() => void runCompress(preFile)} disabled={busy}
+            className="w-full py-3 bg-blue-600 rounded-xl text-sm font-medium disabled:opacity-40">
+            {busy ? "Comprimindo..." : "Comprimir"}
+          </button>
+          <button type="button" onClick={handleSwap} disabled={busy}
+            className="w-full py-2.5 border border-slate-700 rounded-xl text-sm text-slate-400 disabled:opacity-40">
+            Escolher outra imagem
+          </button>
+        </>
+      ) : (
+        <button type="button" onClick={handlePick} disabled={busy}
+          className="w-full py-3 bg-blue-600 rounded-xl text-sm font-medium disabled:opacity-40">
+          {busy ? "Comprimindo..." : "Escolher imagem"}
+        </button>
+      )}
       {result && <ResultPanel files={result} sizeBefore={sizeBefore} />}
     </div>
   );

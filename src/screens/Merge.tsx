@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, ArrowDown, ArrowUp, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
 import RecentsButton from "../components/RecentsButton";
 import { pickFiles, readFileAsBytes } from "../lib/files";
+import { consumeActionFile, actionFileToFile } from "../lib/actionFile";
 import { addRecent } from "../lib/recents";
 import { mergePdfs } from "../lib/pdfOps";
 
@@ -12,6 +13,13 @@ const Merge = () => {
   const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ResultFile[] | null>(null);
+
+  // Arquivo entregue pelo viewer ("usar em…"): entra como 1º PDF da lista;
+  // tipo errado (não-PDF) é descartado em silêncio.
+  useEffect(() => {
+    const af = consumeActionFile();
+    if (af?.mimeType === "application/pdf") setFiles([actionFileToFile(af)]);
+  }, []);
 
   const add = async () => {
     const picked = await pickFiles("application/pdf", true);

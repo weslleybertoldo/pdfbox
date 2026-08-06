@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useLocation } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
 import ProgressBar from "../components/ProgressBar";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
 import RecentsButton from "../components/RecentsButton";
-import { pickFiles, readFileAsBytes, DOCX_MIME, IMG_ACCEPT } from "../lib/files";
+import { pickFiles, readFileAsBytes, isDocxFile, DOCX_MIME, IMG_ACCEPT } from "../lib/files";
+import { consumeActionFile, actionFileToFile } from "../lib/actionFile";
 import { addRecent } from "../lib/recents";
 import { pdfToImages } from "../lib/convert/pdfToImages";
 import { imagesToPdf } from "../lib/convert/imagesToPdf";
@@ -109,12 +110,20 @@ const EXT_MIME: Record<string, string> = {
 const mimeFor = (f: File): string =>
   f.type || EXT_MIME[f.name.split(".").pop()?.toLowerCase() ?? ""] || "application/octet-stream";
 
+/** O arquivo (vindo do viewer) serve pra esta ação? — compara com o accept. */
+const acceptsFile = (accept: string, name: string, mime: string): boolean =>
+  accept.split(",").some((a) =>
+    a === ".docx" ? isDocxFile(name, mime) : a.includes("/") && a === mime);
+
 const Convert = () => {
   const { action = "" } = useParams();
   const cfg = ACTIONS[action];
   const [fmt, setFmt] = useState<Fmt>(() => defaultFmt(action));
   const [progress, setProgress] = useState<number | null>(null);
   const [result, setResult] = useState<ResultFile[] | null>(null);
+  // arquivo pré-carregado (botão de ações do viewer) — dispensa o picker
+  const [preFiles, setPreFiles] = useState<File[] | null>(null);
+  const location = useLocation();
 
   // HashRouter não remonta a tela ao trocar só o :action (mesmo Route/element) —
   // reseta formato padrão e resultado ao navegar entre conversões distintas.
@@ -122,7 +131,18 @@ const Convert = () => {
     setFmt(defaultFmt(action));
     setResult(null);
     setProgress(null);
+    setPreFiles(null);
   }, [action]);
+
+  // Arquivo entregue pelo viewer ("usar em…"): consumo único a cada navegação;
+  // tipo incompatível com a ação é descartado silenciosamente (fica o picker).
+  useEffect(() => {
+    const af = consumeActionFile();
+    if (af && ACTIONS[action] && acceptsFile(ACTIONS[action].accept, af.name, af.mimeType)) {
+      setPreFiles([actionFileToFile(af)]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key]);
 
   if (!cfg) return <p className="p-8 text-center">Ação desconhecida.</p>;
 
@@ -148,6 +168,14 @@ const Convert = () => {
     await runConvert(files);
   };
 
+  /** Com arquivo pré-carregado, o picker vira "trocar": substitui sem rodar. */
+  const handleSwap = async () => {
+    const files = await pickFiles(cfg.accept, cfg.multiple);
+    if (!files.length) return;
+    setPreFiles(files);
+    setResult(null);
+  };
+
   return (
     <div className="p-4 max-w-lg mx-auto space-y-4">
       <div className="flex items-center justify-between">
@@ -170,8 +198,25 @@ const Convert = () => {
           ))}
         </div>
       )}
+      {preFiles && (
+        <div data-preloaded-file
+          className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-sm truncate">
+          Arquivo{preFiles.length > 1 ? "s" : ""}: {preFiles.map((f) => f.name).join(", ")}
+        </div>
+      )}
       {progress !== null ? (
         <ProgressBar percent={progress} label={`Convertendo ${Math.round(progress)}%`} />
+      ) : preFiles ? (
+        <>
+          <button type="button" onClick={() => void runConvert(preFiles)}
+            className="w-full py-3 bg-blue-600 rounded-xl text-sm font-medium">
+            Converter
+          </button>
+          <button type="button" onClick={handleSwap}
+            className="w-full py-2.5 border border-slate-700 rounded-xl text-sm text-slate-400">
+            Escolher outro arquivo
+          </button>
+        </>
       ) : (
         <button type="button" onClick={handlePick}
           className="w-full py-3 bg-blue-600 rounded-xl text-sm font-medium">

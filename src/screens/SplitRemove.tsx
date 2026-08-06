@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
@@ -6,6 +6,7 @@ import PageGrid from "../components/PageGrid";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
 import RecentsButton from "../components/RecentsButton";
 import { pickFiles, readFileAsBytes } from "../lib/files";
+import { consumeActionFile, actionFileToFile } from "../lib/actionFile";
 import { addRecent } from "../lib/recents";
 import { loadPdf, renderThumbnails, destroyPdf } from "../lib/pdfRender";
 import { extractPages } from "../lib/pdfOps";
@@ -49,6 +50,14 @@ const SplitRemove = () => {
     if (!f) return;
     await openFile(f);
   };
+
+  // Arquivo entregue pelo viewer ("usar em…"): abre direto (thumbnails), como
+  // se tivesse sido escolhido; tipo errado (não-PDF) é descartado em silêncio.
+  useEffect(() => {
+    const af = consumeActionFile();
+    if (af?.mimeType === "application/pdf") void openFile(actionFileToFile(af));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleRun = async () => {
     if (!bytes || selected.size === 0) return;
