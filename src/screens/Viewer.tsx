@@ -103,6 +103,14 @@ type ViewMode = "continuous" | "book";
 const VIEWER_MODE_KEY = "viewerMode";
 const SWIPE_MIN_PX = 60;
 
+// ── Duplo-toque ──────────────────────────────────────────────────────────────
+const DBLTAP_MS = 300; // janela máx entre os 2 taps
+const DBLTAP_DIST = 30; // distância máx entre os 2 taps
+const TAP_SLOP = 12; // movimento máx dentro de um tap
+const TAP_MAX_MS = 250; // duração máx de um tap (long-press não conta)
+const DBLTAP_ZOOM = 2; // alvo do duplo-toque quando zoom == 1
+const DBLTAP_ANIM_MS = 160;
+
 /** Zera os backing stores de todos os canvases sob root (libera memória já). */
 const releaseCanvases = (root: ParentNode) => {
   root.querySelectorAll("canvas").forEach((cv) => {
@@ -154,6 +162,7 @@ const Viewer = () => {
   const docxRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(zoom); // valor atual pro handler de pinch (efeito só depende de doc)
   const pendingScrollRef = useRef<number | null>(null); // scrollTop a aplicar após re-render de zoom
+  const pendingScrollLeftRef = useRef<number | null>(null); // scrollLeft do container (duplo-toque no contínuo)
   const pendingScrollPageRef = useRef<number | null>(null); // livro→contínuo: rolar até a página
   const pendingBookScrollRef = useRef<{ left: number; top: number } | null>(null); // pinch no livro
   // double-buffer do zoom: estado do último render comitado + posse do container
@@ -618,6 +627,10 @@ const Viewer = () => {
         }
       }
       pendingScrollRef.current = null;
+      if (pendingScrollLeftRef.current !== null) {
+        container.scrollLeft = pendingScrollLeftRef.current;
+        pendingScrollLeftRef.current = null;
+      }
     } else {
       releaseCanvases(container);
       container.innerHTML = "";
@@ -630,7 +643,10 @@ const Viewer = () => {
           for (let p = 1; p <= doc.numPages; p++) {
             const w = document.createElement("div");
             w.dataset.page = String(p);
-            w.className = "mb-2";
+            // 1 página só: my-auto centraliza vertical quando menor que a área
+            // útil (container flex-col); excedeu → margens auto viram 0 e o
+            // topo continua acessível no scroll
+            w.className = doc.numPages === 1 ? "my-auto" : "mb-2";
             w.style.height = `${estH}px`;
             container.appendChild(w);
             wrappers.push(w);
@@ -1182,6 +1198,117 @@ const Viewer = () => {
     };
   }, [doc, annotating]);
 
+  // ── Duplo-toque: alterna zoom 1 ↔ DBLTAP_ZOOM centrado no ponto tocado
+  // (touch E duplo clique), nos DOIS modos. Detector próprio: 2 taps
+  // < DBLTAP_MS e < DBLTAP_DIST no container, com preventDefault no touchend
+  // do 2º tap ANTES da seleção de palavra nativa do Android disparar.
+  // DECISÃO: duplo-toque SEMPRE dá zoom, inclusive sobre texto — a seleção de
+  // palavra por duplo-toque nativo fica desligada dentro do viewer (long-press
+  // continua selecionando normalmente). Não conflita com pinch (2º pointer
+  // invalida o tap), com o swipe do livro (movimento > TAP_SLOP descarta) nem
+  // com long-press (> TAP_MAX_MS não é tap). Em modo anotação o efeito nem
+  // anexa (duplo-toque desabilitado lá).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!doc || !el || annotating) return;
+    let down: { id: number; t: number; x: number; y: number; multi: boolean } | null = null;
+    let lastTap: { t: number; x: number; y: number } | null = null;
+    let suppressTouchEnd = false;
+    let anim = 0;
+
+    /** Anima o transform até a escala alvo e comita o zoom — o efeito de
+     *  render assume o transform no mesmo frame do estico (double-buffer). */
+    const zoomTo = (target: number, fx: number, fy: number) => {
+      const startZoom = zoomRef.current;
+      const ratio = target / startZoom;
+      const rect = el.getBoundingClientRect();
+      if (viewModeRef.current === "book") {
+        pendingBookScrollRef.current = {
+          left: Math.max(0, (el.scrollLeft + (fx - rect.left)) * ratio - (fx - rect.left)),
+          top: Math.max(0, (el.scrollTop + (fy - rect.top)) * ratio - (fy - rect.top)),
+        };
+      } else {
+        // vertical = scroll do documento; horizontal = scroll interno do container
+        const scroller = document.scrollingElement;
+        const scrollTop = scroller?.scrollTop ?? 0;
+        const offsetTop = rect.top + scrollTop;
+        pendingScrollRef.current = Math.max(
+          0,
+          (scrollTop + fy - offsetTop) * ratio + offsetTop - fy,
+        );
+        pendingScrollLeftRef.current = Math.max(
+          0,
+          (el.scrollLeft + (fx - rect.left)) * ratio - (fx - rect.left),
+        );
+      }
+      el.style.transformOrigin = `${fx - rect.left}px ${fy - rect.top}px`;
+      const t0 = performance.now();
+      const step = (t: number) => {
+        const k = Math.min(1, (t - t0) / DBLTAP_ANIM_MS);
+        el.style.transform = `scale(${1 + (ratio - 1) * k})`;
+        if (k < 1) anim = requestAnimationFrame(step);
+        else setZoom(target); // efeito de render limpa o transform e estica
+      };
+      anim = requestAnimationFrame(step);
+    };
+
+    const onDown = (e: PointerEvent) => {
+      if (down) {
+        down.multi = true; // 2º dedo = pinch, não é tap
+        return;
+      }
+      down = { id: e.pointerId, t: performance.now(), x: e.clientX, y: e.clientY, multi: false };
+    };
+    const onUp = (e: PointerEvent) => {
+      if (!down || e.pointerId !== down.id) return;
+      const d = down;
+      down = null;
+      const now = performance.now();
+      if (
+        d.multi ||
+        now - d.t > TAP_MAX_MS ||
+        Math.hypot(e.clientX - d.x, e.clientY - d.y) > TAP_SLOP
+      ) {
+        lastTap = null;
+        return;
+      }
+      if (
+        lastTap &&
+        now - lastTap.t < DBLTAP_MS &&
+        Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < DBLTAP_DIST
+      ) {
+        lastTap = null;
+        suppressTouchEnd = true; // touchend deste tap vem DEPOIS do pointerup
+        window.getSelection()?.removeAllRanges();
+        const z = zoomRef.current;
+        zoomTo(Math.abs(z - 1) < 0.01 ? DBLTAP_ZOOM : 1, e.clientX, e.clientY);
+      } else {
+        lastTap = { t: now, x: e.clientX, y: e.clientY };
+      }
+    };
+    const onCancel = (e: PointerEvent) => {
+      if (down && e.pointerId === down.id) down = null;
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      if (suppressTouchEnd) {
+        suppressTouchEnd = false;
+        e.preventDefault(); // bloqueia seleção de palavra/click nativos do 2º tap
+      }
+    };
+
+    el.addEventListener("pointerdown", onDown);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    el.addEventListener("touchend", onTouchEnd, { passive: false });
+    return () => {
+      cancelAnimationFrame(anim);
+      el.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      el.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [doc, annotating]);
+
   const hasContent = Boolean(doc || imgUrl || docxHtml);
   // layout do modo livro: raiz presa à altura da tela (sem scroll do documento);
   // o scroll vira interno do container da página
@@ -1370,10 +1497,12 @@ const Viewer = () => {
             <div className="p-3 pb-0"><ResultPanel files={result} /></div>
           )}
           {/* modo livro: display:flex + min-h-0 → filho m-auto centraliza a
-              página e o overflow interno rola certo quando ela é maior */}
+              página e o overflow interno rola certo quando ela é maior.
+              contínuo: flex-col → wrapper my-auto centraliza PDF de 1 página
+              menor que a área útil (maior → margens auto zeram, topo acessível) */}
           <div
             ref={containerRef}
-            className={`flex-1 overflow-auto p-2 ${bookLayout ? "min-h-0 flex" : ""}`}
+            className={`flex-1 overflow-auto p-2 flex ${bookLayout ? "min-h-0" : "flex-col"}`}
             style={{ touchAction: "pan-x pan-y" }}
           />
           {bookLayout && (
