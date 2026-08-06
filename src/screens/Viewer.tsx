@@ -103,6 +103,40 @@ type ViewMode = "continuous" | "book";
 const VIEWER_MODE_KEY = "viewerMode";
 const SWIPE_MIN_PX = 60;
 
+/** Zera os backing stores de todos os canvases sob root (libera memória já). */
+const releaseCanvases = (root: ParentNode) => {
+  root.querySelectorAll("canvas").forEach((cv) => {
+    cv.width = 0;
+    cv.height = 0;
+  });
+};
+
+/**
+ * Double-buffer do zoom: estica o conteúdo ANTIGO do box pra escala nova via
+ * CSS (bitmap fica borrado mas VISÍVEL) até o render novo trocar o box inteiro
+ * de forma atômica — sem nenhum frame de tela vazia entre o zoom e o re-render.
+ * dataset.scale (box e overlay) acompanha pra coordenadas de anotação e
+ * repaint continuarem consistentes durante a janela; o --scale-factor do text
+ * layer idem (spans invisíveis; o layer é recriado no swap).
+ */
+const stretchBox = (box: HTMLElement, ratio: number) => {
+  const scalePx = (el: HTMLElement) => {
+    el.style.width = `${parseFloat(el.style.width) * ratio}px`;
+    el.style.height = `${parseFloat(el.style.height) * ratio}px`;
+  };
+  scalePx(box);
+  if (box.dataset.scale) box.dataset.scale = String(Number(box.dataset.scale) * ratio);
+  box.querySelectorAll<HTMLCanvasElement>("canvas").forEach((cv) => {
+    scalePx(cv);
+    if (cv.dataset.annotPage && box.dataset.scale) cv.dataset.scale = box.dataset.scale;
+  });
+  const text = box.querySelector<HTMLElement>(".textLayer");
+  if (text) {
+    const sf = parseFloat(text.style.getPropertyValue("--scale-factor"));
+    if (sf) text.style.setProperty("--scale-factor", String(sf * ratio));
+  }
+};
+
 const Viewer = () => {
   const [doc, setDoc] = useState<PdfDoc | null>(null);
   const [blob, setBlob] = useState<Blob | null>(null); // p/ compartilhar
@@ -122,6 +156,10 @@ const Viewer = () => {
   const pendingScrollRef = useRef<number | null>(null); // scrollTop a aplicar após re-render de zoom
   const pendingScrollPageRef = useRef<number | null>(null); // livro→contínuo: rolar até a página
   const pendingBookScrollRef = useRef<{ left: number; top: number } | null>(null); // pinch no livro
+  // double-buffer do zoom: estado do último render comitado + posse do container
+  // (o cleanup só limpa o DOM de verdade se nenhum efeito assumir no mesmo commit)
+  const lastRenderRef = useRef<{ doc: PdfDoc; mode: ViewMode; zoom: number; page: number } | null>(null);
+  const claimRef = useRef(false);
   const location = useLocation();
   useEffect(() => {
     zoomRef.current = zoom;
@@ -400,12 +438,19 @@ const Viewer = () => {
   // o canvas quando a página se aproxima do viewport (rootMargin) e DESCARTA os
   // canvases longe (volta a placeholder com a mesma altura) — no máx MAX_LIVE
   // canvases vivos, senão PDF de 100+ páginas derruba a WebView.
-  // Zoom/doc mudam → efeito re-roda: invalida tudo e re-observa.
+  // Zoom/doc mudam → efeito re-roda e re-observa. ZOOM no mesmo doc/modo é
+  // DOUBLE-BUFFER: o DOM antigo NÃO é limpo — cada box é esticado via CSS pra
+  // escala nova (stretchBox) e fica visível até o render novo trocá-lo
+  // atomicamente no pump (replaceChildren) — zero frames de tela vazia.
   // Modo livro tem efeito próprio (abaixo); este só roda no contínuo.
   useEffect(() => {
     if (!doc || viewMode !== "continuous" || !containerRef.current) return;
     const container = containerRef.current;
-    container.innerHTML = "";
+    claimRef.current = true;
+    // preview de pinch/duplo-toque sai no MESMO frame em que o conteúdo
+    // esticado + scroll ajustado entram — sem "pulo" de escala no meio
+    container.style.transform = "";
+    container.style.transformOrigin = "";
     let cancelled = false;
     const MAX_LIVE = 12;
     const wrappers: HTMLDivElement[] = [];
@@ -479,7 +524,14 @@ const Viewer = () => {
           const wrapper = wrappers[next - 1];
           // altura real (CSS, não física) substitui a estimada
           wrapper.style.height = `${viewport.height}px`;
+          // troca ATÔMICA: o conteúdo antigo (double-buffer esticado) só sai
+          // no mesmo instante em que o novo entra; backing stores liberados já
+          const oldCanvases = [...wrapper.querySelectorAll("canvas")];
           wrapper.replaceChildren(box);
+          for (const cv of oldCanvases) {
+            cv.width = 0;
+            cv.height = 0;
+          }
           live.set(next, { box, canvas, text });
           // página recriada em modo anotação → overlay volta com as anotações
           if (annotatingRef.current) ensureOverlay(box);
@@ -507,6 +559,13 @@ const Viewer = () => {
           } else {
             near.delete(p);
             wanted.delete(p);
+            // box "stale" (double-buffer de zoom anterior) longe do viewport:
+            // vira placeholder sem re-render (fora da tela → não pisca)
+            const w = wrappers[p - 1];
+            if (w && !live.has(p) && w.firstElementChild) {
+              releaseCanvases(w);
+              w.replaceChildren();
+            }
           }
         }
         evictFar();
@@ -518,66 +577,164 @@ const Viewer = () => {
       { rootMargin: "1500px 0px" },
     );
 
-    (async () => {
-      try {
-        // altura estimada dos placeholders a partir da página 1 (corrigida ao renderizar)
-        const vp1 = (await doc.getPage(1)).getViewport({ scale: 1 });
-        const estH = (baseW / vp1.width) * vp1.height * zoom;
-        if (cancelled) return;
-        for (let p = 1; p <= doc.numPages; p++) {
-          const w = document.createElement("div");
-          w.dataset.page = String(p);
-          w.className = "mb-2";
-          w.style.height = `${estH}px`;
-          container.appendChild(w);
+    // reuse = zoom mudou no MESMO doc/modo com o DOM anterior intacto →
+    // double-buffer (estica e re-renderiza por cima); senão, rebuild do zero
+    const last = lastRenderRef.current;
+    const reuse =
+      last !== null &&
+      last.doc === doc &&
+      last.mode === "continuous" &&
+      container.querySelectorAll(":scope > [data-page]").length === doc.numPages;
+    lastRenderRef.current = { doc, mode: "continuous", zoom, page: 0 };
+
+    if (reuse) {
+      const ratio = zoom / last.zoom;
+      container
+        .querySelectorAll<HTMLDivElement>(":scope > [data-page]")
+        .forEach((w) => {
+          if (ratio !== 1) {
+            w.style.height = `${parseFloat(w.style.height) * ratio}px`;
+            const box = w.querySelector<HTMLElement>("[data-annot-box]");
+            if (box) stretchBox(box, ratio);
+          }
           wrappers.push(w);
           observer.observe(w);
-        }
-        // alternância livro→contínuo: rola o documento até a página que
-        // estava aberta no livro (48 ≈ altura do header sticky)
-        if (pendingScrollPageRef.current !== null) {
-          const target = wrappers[pendingScrollPageRef.current - 1];
-          pendingScrollPageRef.current = null;
-          const scroller = document.scrollingElement;
-          if (target && scroller) {
-            scroller.scrollTop = Math.max(
-              0,
-              target.getBoundingClientRect().top + scroller.scrollTop - 48,
-            );
-          }
-        }
-        // zoom via pinch: restaura a posição de scroll aproximada do ponto focal
+        });
+      // scroll acompanha a escala nova NO MESMO frame do estico (sem pulo):
+      // pinch/duplo-toque trazem o alvo calculado no ponto focal; zoom por
+      // botão ancora o conteúdo sob o topo visível do container
+      const scroller = document.scrollingElement;
+      if (scroller && ratio !== 1) {
         if (pendingScrollRef.current !== null) {
-          const scroller = document.scrollingElement;
-          if (scroller) scroller.scrollTop = pendingScrollRef.current;
-          pendingScrollRef.current = null;
+          scroller.scrollTop = pendingScrollRef.current;
+        } else {
+          const rectTop = container.getBoundingClientRect().top;
+          const fy = Math.max(rectTop, 0);
+          const offsetTop = rectTop + scroller.scrollTop;
+          scroller.scrollTop = Math.max(
+            0,
+            (scroller.scrollTop + fy - offsetTop) * ratio + offsetTop - fy,
+          );
         }
-      } catch (e) {
-        if (cancelled) return;
-        console.error(e);
-        toast.error("Erro ao renderizar PDF");
       }
-    })();
+      pendingScrollRef.current = null;
+    } else {
+      releaseCanvases(container);
+      container.innerHTML = "";
+      (async () => {
+        try {
+          // altura estimada dos placeholders a partir da página 1 (corrigida ao renderizar)
+          const vp1 = (await doc.getPage(1)).getViewport({ scale: 1 });
+          const estH = (baseW / vp1.width) * vp1.height * zoom;
+          if (cancelled) return;
+          for (let p = 1; p <= doc.numPages; p++) {
+            const w = document.createElement("div");
+            w.dataset.page = String(p);
+            w.className = "mb-2";
+            w.style.height = `${estH}px`;
+            container.appendChild(w);
+            wrappers.push(w);
+            observer.observe(w);
+          }
+          // alternância livro→contínuo: rola o documento até a página que
+          // estava aberta no livro (48 ≈ altura do header sticky)
+          if (pendingScrollPageRef.current !== null) {
+            const target = wrappers[pendingScrollPageRef.current - 1];
+            pendingScrollPageRef.current = null;
+            const scroller = document.scrollingElement;
+            if (target && scroller) {
+              scroller.scrollTop = Math.max(
+                0,
+                target.getBoundingClientRect().top + scroller.scrollTop - 48,
+              );
+            }
+          }
+          // zoom via pinch: restaura a posição de scroll aproximada do ponto focal
+          if (pendingScrollRef.current !== null) {
+            const scroller = document.scrollingElement;
+            if (scroller) scroller.scrollTop = pendingScrollRef.current;
+            pendingScrollRef.current = null;
+          }
+        } catch (e) {
+          if (cancelled) return;
+          console.error(e);
+          toast.error("Erro ao renderizar PDF");
+        }
+      })();
+    }
 
     return () => {
       cancelled = true;
       observer.disconnect();
-      for (const p of [...live.keys()]) discard(p); // libera canvases/text layers
+      for (const { text } of live.values()) text.cancel();
+      claimRef.current = false;
+      // limpeza REAL adiada: se outro efeito assumir o container neste mesmo
+      // commit (zoom/modo novos), o conteúdo antigo fica como double-buffer;
+      // senão (unmount / arquivo não-PDF), libera canvases e esvazia
+      queueMicrotask(() => {
+        if (claimRef.current) return;
+        releaseCanvases(container);
+        container.replaceChildren();
+        lastRenderRef.current = null;
+      });
     };
   }, [doc, zoom, viewMode]);
 
   // ── Render do modo livro: SÓ a página atual no DOM (canvas + text layer +
   // overlay de anotação se anotando). O wrapper com margin:auto centraliza a
   // página quando menor que a área útil; maior (zoom) → scroll interno do
-  // container. Zoom/página mudam → re-render na escala nova.
+  // container. Zoom na MESMA página é DOUBLE-BUFFER: o conteúdo atual é
+  // esticado via CSS pra escala nova e fica visível até o render novo trocar
+  // tudo atomicamente — zero frames de tela vazia. Página/doc novos →
+  // re-render do zero.
   useEffect(() => {
     if (!doc || viewMode !== "book" || !containerRef.current) return;
     const container = containerRef.current;
-    container.replaceChildren(); // limpa o conteúdo do outro modo/página
+    claimRef.current = true;
+    container.style.transform = ""; // assume o preview do pinch/duplo-toque
+    container.style.transformOrigin = "";
     let cancelled = false;
     let livePage: { canvas: HTMLCanvasElement; text: { cancel: () => void } } | null = null;
     const baseW = container.clientWidth - 16;
     const dpr = window.devicePixelRatio || 1;
+
+    const last = lastRenderRef.current;
+    const reuse =
+      last !== null &&
+      last.doc === doc &&
+      last.mode === "book" &&
+      last.page === bookPage &&
+      container.querySelector("[data-annot-box]") !== null;
+    lastRenderRef.current = { doc, mode: "book", zoom, page: bookPage };
+    let keepScroll: { left: number; top: number } | null = null;
+    if (reuse) {
+      const ratio = zoom / last.zoom;
+      if (ratio !== 1) {
+        const box = container.querySelector<HTMLElement>("[data-annot-box]");
+        if (box) stretchBox(box, ratio);
+        if (pendingBookScrollRef.current) {
+          // pinch/duplo-toque: ponto focal calculado pelo gesto
+          container.scrollLeft = pendingBookScrollRef.current.left;
+          container.scrollTop = pendingBookScrollRef.current.top;
+        } else {
+          // zoom por botão: mantém o CENTRO da área visível
+          container.scrollLeft = Math.max(
+            0,
+            (container.scrollLeft + container.clientWidth / 2) * ratio - container.clientWidth / 2,
+          );
+          container.scrollTop = Math.max(
+            0,
+            (container.scrollTop + container.clientHeight / 2) * ratio - container.clientHeight / 2,
+          );
+        }
+        pendingBookScrollRef.current = null;
+      }
+      keepScroll = { left: container.scrollLeft, top: container.scrollTop };
+    } else {
+      releaseCanvases(container);
+      container.replaceChildren(); // limpa o conteúdo do outro modo/página
+    }
+
     (async () => {
       try {
         const page = await doc.getPage(bookPage);
@@ -606,7 +763,13 @@ const Viewer = () => {
         wrapper.dataset.page = String(bookPage);
         wrapper.className = "m-auto shrink-0"; // flex + margin:auto: centraliza E rola certo
         wrapper.appendChild(box);
+        // troca ATÔMICA: o double-buffer esticado sai junto da entrada do novo
+        const oldCanvases = [...container.querySelectorAll("canvas")];
         container.replaceChildren(wrapper);
+        for (const cv of oldCanvases) {
+          cv.width = 0;
+          cv.height = 0;
+        }
         livePage = { canvas, text };
         if (annotatingRef.current) ensureOverlay(box);
         if (pendingBookScrollRef.current) {
@@ -614,6 +777,10 @@ const Viewer = () => {
           container.scrollLeft = pendingBookScrollRef.current.left;
           container.scrollTop = pendingBookScrollRef.current.top;
           pendingBookScrollRef.current = null;
+        } else if (keepScroll) {
+          // zoom na mesma página: replaceChildren pode clampar o scroll → repõe
+          container.scrollLeft = keepScroll.left;
+          container.scrollTop = keepScroll.top;
         } else {
           container.scrollTop = 0; // página nova começa no topo
           container.scrollLeft = 0;
@@ -627,12 +794,15 @@ const Viewer = () => {
     })();
     return () => {
       cancelled = true;
-      if (livePage) {
-        livePage.text.cancel();
-        livePage.canvas.width = 0; // libera o backing store imediatamente
-        livePage.canvas.height = 0;
-      }
-      container.replaceChildren();
+      livePage?.text.cancel();
+      claimRef.current = false;
+      // mesma limpeza adiada do contínuo: só limpa se ninguém assumir o DOM
+      queueMicrotask(() => {
+        if (claimRef.current) return;
+        releaseCanvases(container);
+        container.replaceChildren();
+        lastRenderRef.current = null;
+      });
     };
   }, [doc, zoom, viewMode, bookPage]);
 
@@ -958,9 +1128,14 @@ const Viewer = () => {
       if (!pointers.delete(e.pointerId)) return;
       if (!gesture || pointers.size >= 2) return;
       gesture = false;
-      clearTransform();
       const newZoom = Math.min(3, Math.max(0.5, startZoom * g));
-      if (Math.abs(newZoom - startZoom) < 0.01) return;
+      if (Math.abs(newZoom - startZoom) < 0.01) {
+        clearTransform();
+        return;
+      }
+      // NÃO limpa o transform aqui: o preview da pinça segura a tela até o
+      // efeito de render assumir (ele zera o transform no MESMO frame em que
+      // estica o conteúdo e ajusta o scroll) — sem piscar nem pulo de escala
       const ratio = newZoom / startZoom;
       if (viewModeRef.current === "book") {
         // modo livro: restaura o foco no scroll INTERNO do container
