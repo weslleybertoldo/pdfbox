@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
-  ArrowLeft, Bold, BookOpen, Check, ChevronLeft, ChevronRight, Hand,
+  ArrowLeft, Bold, BookOpen, Check, ChevronLeft, ChevronRight, Download, Hand,
   Highlighter, Italic, LayoutGrid, List, Pencil, PenLine, ScrollText, Share2,
   Type, Undo2, X, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { toast } from "sonner";
 import { pickFiles, DOCX_MIME, isDocxFile } from "../lib/files";
+import { saveToDevice } from "../lib/mediaSaver";
 import {
   loadPdf,
   renderPage,
@@ -1358,6 +1359,19 @@ const Viewer = () => {
   }, [doc, annotating]);
 
   const hasContent = Boolean(doc || imgUrl || docxHtml);
+
+  // Salvar o arquivo ABERTO no dispositivo: imagem → galeria, PDF/Word →
+  // Downloads (mesma convenção de collection das telas de resultado)
+  const saveOpenFile = async () => {
+    if (!blob || !name) return;
+    try {
+      await saveToDevice(blob, name, imgUrl ? "images" : "downloads");
+      toast.success(imgUrl ? "Imagem salva na galeria" : "Arquivo salvo em Downloads");
+    } catch (e) {
+      toast.error(`Erro ao salvar: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
   // layout do modo livro: raiz presa à altura da tela (sem scroll do documento);
   // o scroll vira interno do container da página
   const bookLayout = Boolean(doc) && viewMode === "book";
@@ -1424,6 +1438,12 @@ const Viewer = () => {
                 </button>
               )}
             </ActionsMenu>
+          )}
+          {hasContent && !editing && !annotating && blob && name && (
+            <button type="button" aria-label="Salvar no dispositivo"
+              title="Salvar no dispositivo" onClick={saveOpenFile}>
+              <Download size={18} />
+            </button>
           )}
           {hasContent && !editing && !annotating && blob && name && (
             <ShareMenu payload={{ kind: "blobs", files: [{ blob, name }] }}>
