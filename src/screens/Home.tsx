@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Eye, Image, FileText, FileType, Table2, Globe, Minimize2,
-  Film, Merge as MergeIcon, Scissors, Settings, Trash2, Camera,
+  Film, Merge as MergeIcon, Scissors, Settings, Trash2, Camera, LockOpen,
 } from "lucide-react";
 import FooterVersion from "../components/FooterVersion";
 import ShareTargetsConfig from "../components/ShareTargetsConfig";
@@ -24,6 +24,7 @@ const ACTIONS = [
   { to: "/merge", icon: MergeIcon, label: "Juntar PDFs", desc: "2+ em 1" },
   { to: "/pages/split", icon: Scissors, label: "Dividir PDF", desc: "Separar páginas" },
   { to: "/pages/remove", icon: Trash2, label: "Remover páginas", desc: "Escolhe as que ficam" },
+  { to: "/unlock", icon: LockOpen, label: "Remover senha", desc: "Cópia do PDF sem senha" },
   { to: "/scan", icon: Camera, label: "Digitalizar", desc: "Foto → PDF c/ filtros" },
 ];
 

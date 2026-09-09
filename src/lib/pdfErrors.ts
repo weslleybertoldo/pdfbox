@@ -21,9 +21,9 @@ export const isWrongPasswordError = (err: unknown): boolean =>
   isPasswordError(err) && (err as { code?: number }).code === INCORRECT_PASSWORD;
 
 /** Mensagem única das conversões/ações quando o PDF é protegido (o prompt de
- *  senha existe SÓ no viewer — ver decisão documentada em actionFile.ts). */
+ *  senha existe SÓ no viewer e em Remover senha — ver decisão em actionFile.ts). */
 export const PASSWORD_PROTECTED_MSG =
-  "PDF protegido por senha — abra no visualizador e informe a senha";
+  "PDF protegido por senha — use Remover senha ou abra no visualizador e informe a senha";
 
 /**
  * Erro "protegido por senha" pros caminhos pdf-lib (merge/split/compressão

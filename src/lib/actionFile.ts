@@ -14,11 +14,18 @@
  * e o histórico/recents nunca teria a senha. Metade das ações funcionando
  * seria pior UX que a regra única atual: qualquer ação sobre PDF protegido
  * mostra PASSWORD_PROTECTED_MSG (pdfErrors.ts).
+ *
+ * EXCEÇÃO (v1.5.0) — "Remover senha": a senha digitada no viewer VIAJA no
+ * handoff (`password`) só pra essa tela, que existe justamente pra decifrar o
+ * PDF — sem isso o usuário digitaria a mesma senha duas vezes seguidas. As
+ * demais telas ignoram o campo (a regra acima continua valendo pra elas).
  */
 export interface ActionFile {
   blob: Blob;
   name: string;
   mimeType: string;
+  /** senha com que o viewer abriu o PDF (consumida SÓ por /unlock) */
+  password?: string;
 }
 
 let pending: ActionFile | null = null;

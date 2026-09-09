@@ -26,10 +26,16 @@ const PAGE_SIZE = 10;
 const PANEL_MAX_WIDTH = 360;
 
 interface PanelPos {
-  top: number;
+  /** ancorado abaixo do botão (top) OU acima dele (bottom) — um dos dois */
+  top?: number;
+  bottom?: number;
   left: number;
   width: number;
 }
+
+/** Espaço mínimo abaixo do botão pra abrir o painel pra baixo; menos que isso
+ *  (botão na barra inferior do viewer) abre pra cima. */
+const MIN_SPACE_BELOW = 260;
 
 /**
  * Ícone de histórico + painel dropdown com os últimos arquivos usados na
@@ -37,12 +43,17 @@ interface PanelPos {
  * o fluxo da tela roda com ele como entrada, sem abrir o picker.
  *
  * O painel é renderizado via portal (createPortal pro body) com
- * position:fixed ancorado logo abaixo do botão — nenhum ancestral (header
- * sticky, containers com overflow) consegue cortá-lo, em qualquer tela.
+ * position:fixed ancorado logo abaixo do botão — ou logo ACIMA, quando não há
+ * espaço embaixo (botão na barra inferior do viewer) — nenhum ancestral
+ * (header sticky, containers com overflow) consegue cortá-lo, em qualquer tela.
+ *
+ * `label`: renderiza o botão no estilo da barra inferior (ícone + legenda);
+ * sem label, ícone compacto (cabeçalhos das telas de função).
  */
-const RecentsButton = ({ category, onPick }: {
+const RecentsButton = ({ category, onPick, label }: {
   category: string;
   onPick: (file: File) => void;
+  label?: string;
 }) => {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<RecentMeta[]>([]);
@@ -62,7 +73,13 @@ const RecentsButton = ({ category, onPick }: {
       Math.max(8, r.right - width), // alinhado à direita do botão
       window.innerWidth - width - 8, // sem estourar a borda direita da tela
     );
-    setPos({ top: r.bottom + 4, left: Math.max(8, left), width });
+    const spaceBelow = window.innerHeight - r.bottom;
+    const openUp = spaceBelow < MIN_SPACE_BELOW && r.top > spaceBelow;
+    setPos(
+      openUp
+        ? { bottom: window.innerHeight - r.top + 4, left: Math.max(8, left), width }
+        : { top: r.bottom + 4, left: Math.max(8, left), width },
+    );
   };
 
   const toggle = () => {
@@ -125,17 +142,22 @@ const RecentsButton = ({ category, onPick }: {
   const visible = items.slice(0, visibleCount);
 
   return (
-    <div className="relative">
+    <div className={label ? "flex-1 min-w-0 flex" : "relative"}>
       <button
         ref={btnRef}
         type="button"
-        aria-label="Histórico"
-        title="Histórico"
+        aria-label={label ?? "Histórico"}
+        title={label ?? "Histórico"}
         data-recents-button=""
         onClick={toggle}
-        className="p-1 text-slate-300"
+        className={
+          label
+            ? "flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-2 text-slate-300 active:text-blue-400"
+            : "p-1 text-slate-300"
+        }
       >
-        <History size={18} />
+        <History size={label ? 20 : 18} />
+        {label && <span className="text-[10px] leading-none">{label}</span>}
       </button>
       {open && pos &&
         createPortal(
@@ -145,7 +167,13 @@ const RecentsButton = ({ category, onPick }: {
             <div
               data-recents-panel=""
               className="fixed bg-slate-900 border border-slate-700 rounded-xl shadow-xl z-[9999] flex flex-col overflow-hidden"
-              style={{ top: pos.top, left: pos.left, width: pos.width, maxHeight: "60vh" }}
+              style={{
+                top: pos.top,
+                bottom: pos.bottom,
+                left: pos.left,
+                width: pos.width,
+                maxHeight: "60vh",
+              }}
             >
               <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800 shrink-0">
                 <span className="text-xs font-medium text-slate-300">Recentes</span>

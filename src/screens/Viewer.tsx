@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
-  ArrowLeft, Bold, BookOpen, Check, ChevronLeft, ChevronRight, Download, Hand,
-  Highlighter, Italic, LayoutGrid, List, Pencil, PenLine, ScrollText, Share2,
-  Type, Undo2, X, ZoomIn, ZoomOut,
+  ArrowLeft, Bold, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
+  Download, Hand, Highlighter, Italic, LayoutGrid, List, LockOpen, Pencil, PenLine,
+  ScrollText, Search, Share2, Type, Undo2, X, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { toast } from "sonner";
 import { pickFiles, DOCX_MIME, isDocxFile } from "../lib/files";
@@ -13,10 +13,19 @@ import {
   renderPage,
   renderTextLayer,
   destroyPdf,
+  getTextLayerDivs,
   isPasswordError,
   isWrongPasswordError,
   type PdfDoc,
 } from "../lib/pdfRender";
+import { unlockPdf, unlockedName } from "../lib/pdfUnlock";
+import { searchPdf, type PageIndex, type SearchMatch } from "../lib/pdfSearch";
+import {
+  buildText, findMatches, normalizeForSearch, splitMatch, type Piece,
+} from "../lib/textSearch";
+import {
+  clearSearchHighlights, rangeOver, scrollToRange, setSearchHighlights,
+} from "../lib/searchHighlight";
 import {
   annotatePdf,
   paintAnnotations,
@@ -50,6 +59,40 @@ const ToolBtn = ({ label, onClick, children }: {
     {children}
   </button>
 );
+
+/** Botão da barra inferior do viewer: ícone + legenda, fração igual da largura. */
+const BarBtn = ({ label, onClick, disabled, children }: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) => (
+  <button
+    type="button"
+    aria-label={label}
+    title={label}
+    disabled={disabled}
+    onClick={onClick}
+    data-bar-btn={label}
+    className="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-2 text-slate-300 active:text-blue-400 disabled:opacity-40"
+  >
+    {children}
+    <span className="text-[10px] leading-none">{label}</span>
+  </button>
+);
+
+/** Elementos de BLOCO do HTML do mammoth (fronteira de texto na busca do Word). */
+const DOCX_BLOCKS = "p, h1, h2, h3, h4, h5, h6, li, td, th, pre, blockquote, div";
+
+/** Nós de texto (não vazios) sob root, em ordem de documento — busca no Word. */
+const collectTextNodes = (root: HTMLElement): Text[] => {
+  const out: Text[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if ((n as Text).data.length > 0) out.push(n as Text);
+  }
+  return out;
+};
 
 // ── Modo anotação de PDF ─────────────────────────────────────────────────────
 // Anotações vivem em ESTADO por página (annotsRef), em PONTOS PDF com origem
@@ -178,26 +221,34 @@ const Viewer = () => {
   }, [zoom]);
   const viewModeRef = useRef(viewMode);
   viewModeRef.current = viewMode;
+  const bookPageRef = useRef(bookPage);
+  bookPageRef.current = bookPage;
   useEffect(() => {
     localStorage.setItem(VIEWER_MODE_KEY, viewMode);
   }, [viewMode]);
+
+  /** Página mais visível no viewport (contínuo) ou a do livro. */
+  const mostVisiblePage = () => {
+    if (viewModeRef.current === "book") return bookPageRef.current;
+    const wrappers = containerRef.current?.querySelectorAll<HTMLElement>("[data-page]");
+    let best = 1;
+    let bestVis = -Infinity;
+    wrappers?.forEach((w) => {
+      const r = w.getBoundingClientRect();
+      const vis = Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0);
+      if (vis > bestVis) {
+        bestVis = vis;
+        best = Number(w.dataset.page) || 1;
+      }
+    });
+    return best;
+  };
 
   /** Toggle contínuo↔livro preservando a página atual. */
   const toggleViewMode = () => {
     if (viewMode === "continuous") {
       // página mais visível no viewport vira a página do livro
-      const wrappers = containerRef.current?.querySelectorAll<HTMLElement>("[data-page]");
-      let best = 1;
-      let bestVis = -Infinity;
-      wrappers?.forEach((w) => {
-        const r = w.getBoundingClientRect();
-        const vis = Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0);
-        if (vis > bestVis) {
-          bestVis = vis;
-          best = Number(w.dataset.page) || 1;
-        }
-      });
-      setBookPage(best);
+      setBookPage(mostVisiblePage());
       setViewMode("book");
     } else {
       pendingScrollPageRef.current = bookPage;
@@ -384,6 +435,10 @@ const Viewer = () => {
     { bytes: Uint8Array; name: string; mime: string; wrong: boolean } | null
   >(null);
   const [pwdValue, setPwdValue] = useState("");
+  const [pwdBusy, setPwdBusy] = useState(false); // "Remover senha" rodando no dialog
+  // senha com que o PDF atual foi aberto — viaja no handoff SÓ pra /unlock
+  // (ver decisão em actionFile.ts); nunca é gravada
+  const [openPassword, setOpenPassword] = useState<string | null>(null);
 
   /** openBytes + tratamento de erro (toast) e de senha (dialog). Não lança. */
   const tryOpenBytes = async (
@@ -394,6 +449,7 @@ const Viewer = () => {
   ) => {
     try {
       await openBytes(bytes, fileName, mimeType, password);
+      setOpenPassword(password ?? null);
       setPwdAsk(null); // sucesso: fecha o dialog (no retry) e limpa a senha
       setPwdValue("");
     } catch (e) {
@@ -414,6 +470,47 @@ const Viewer = () => {
   const cancelPwd = () => {
     setPwdAsk(null);
     setPwdValue("");
+  };
+
+  /**
+   * "Remover senha" no dialog: decifra com a senha digitada (qpdf), abre a
+   * CÓPIA sem senha no viewer e oferece Salvar/Compartilhar (ResultPanel).
+   * Senha errada → mesma mensagem do dialog; a senha não é guardada.
+   */
+  const unlockFromDialog = async () => {
+    if (!pwdAsk || !pwdValue || pwdBusy) return;
+    setPwdBusy(true);
+    try {
+      const r = await unlockPdf(pwdAsk.bytes, pwdValue);
+      if (r.status === "needs-password") {
+        setPwdAsk({ ...pwdAsk, wrong: true });
+        return;
+      }
+      if (r.status === "not-encrypted") {
+        // não deveria acontecer (o dialog só abre com PasswordException)
+        await tryOpenBytes(pwdAsk.bytes, pwdAsk.name, pwdAsk.mime);
+        return;
+      }
+      if (r.status === "error") {
+        toast.error(`Erro ao remover senha: ${r.message}`);
+        return;
+      }
+      const outName = unlockedName(pwdAsk.name);
+      await openBytes(r.bytes, outName, "application/pdf");
+      setOpenPassword(null);
+      setResult([{
+        blob: new Blob([r.bytes.slice()], { type: "application/pdf" }),
+        name: outName,
+        collection: "downloads",
+      }]);
+      setPwdAsk(null);
+      setPwdValue("");
+      toast.success("Senha removida — cópia aberta sem senha");
+    } catch (e) {
+      toast.error(`Erro ao remover senha: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setPwdBusy(false);
+    }
   };
 
   const handleOpen = async () => {
@@ -590,12 +687,21 @@ const Viewer = () => {
             cv.width = 0;
             cv.height = 0;
           }
+          // rebuild (sem double-buffer): o scroll horizontal do ponto focal só
+          // pode ser aplicado quando existe um box largo o bastante no DOM
+          if (pendingScrollLeftRef.current !== null) {
+            container.scrollLeft = pendingScrollLeftRef.current;
+            pendingScrollLeftRef.current = null;
+          }
           live.set(next, { box, canvas, text });
           // página recriada em modo anotação → overlay volta com as anotações
           if (annotatingRef.current) ensureOverlay(box);
           evictFar();
           // página sem texto/cancelada → segue sem seleção, sem derrubar o viewer
           await text.promise.catch(() => {});
+          // busca ativa: pinta as ocorrências da página recém-renderizada (e
+          // rola até a atual, se era ela que estava pendente)
+          if (!cancelled) applyHighlightsRef.current();
         }
       } catch (e) {
         // doc destruído/trocado no meio do render (troca legítima) → silencia
@@ -851,6 +957,7 @@ const Viewer = () => {
           container.scrollLeft = 0;
         }
         await text.promise.catch(() => {});
+        if (!cancelled) applyHighlightsRef.current(); // busca ativa: destaca a página
       } catch (e) {
         if (cancelled) return;
         console.error(e);
@@ -1216,6 +1323,12 @@ const Viewer = () => {
           0,
           (startScrollTop + startMid.y - startOffsetTop) * ratio + startOffsetTop - startMid.y,
         );
+        // horizontal = scroll INTERNO do container (página fica mais larga que a
+        // tela): mesma fórmula do duplo-toque. Sem isto o scrollLeft ficava em 0
+        // e a página re-renderizada "escorregava" pra borda esquerda — bug visto
+        // no device ao dar pinça na lateral direita (09/09).
+        const fx = startMid.x - startRect.left;
+        pendingScrollLeftRef.current = Math.max(0, (startElScroll.left + fx) * ratio - fx);
       }
       setZoom(newZoom); // mesmo fluxo do botão: efeito de render re-roda na nova escala
     };
@@ -1360,6 +1473,205 @@ const Viewer = () => {
 
   const hasContent = Boolean(doc || imgUrl || docxHtml);
 
+  // ── Pesquisa no documento ────────────────────────────────────────────────
+  // PDF: índice por página (pdfSearch.ts, getTextContent) → ocorrências →
+  // Ranges sobre os spans do text layer das páginas VIVAS (virtualização) via
+  // CSS Custom Highlight API (searchHighlight.ts). Word: mesmo núcleo sobre
+  // os nós de texto do HTML do mammoth. Navegar: contínuo rola o documento
+  // (página ainda não renderizada → scrollIntoView do placeholder e o pump
+  // termina o trabalho ao renderizar); livro troca a página. Destaques são
+  // re-aplicados a cada página renderizada (pump) e a cada mudança de estado.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [matches, setMatches] = useState<SearchMatch[]>([]);
+  const [current, setCurrent] = useState(-1);
+  const [searching, setSearching] = useState(false);
+  const searchOpenRef = useRef(searchOpen);
+  searchOpenRef.current = searchOpen;
+  const matchesRef = useRef(matches);
+  matchesRef.current = matches;
+  const currentRef = useRef(current);
+  currentRef.current = current;
+  const pageIndexRef = useRef<Map<number, PageIndex>>(new Map()); // peças por página (fatiar em spans)
+  const docxPiecesRef = useRef<{ nodes: Text[]; pieces: Piece[] } | null>(null);
+  const pendingMatchRef = useRef<number | null>(null); // ocorrência a rolar quando o nó dela existir
+
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setQuery("");
+    setMatches([]);
+    setCurrent(-1);
+    setSearching(false);
+    pendingMatchRef.current = null;
+    clearSearchHighlights();
+  };
+
+  // arquivo novo / edição / anotação → fecha a busca (os nós destacados morrem)
+  useEffect(() => {
+    pageIndexRef.current = new Map();
+    docxPiecesRef.current = null;
+    if (searchOpenRef.current) closeSearch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, docxHtml, imgUrl, editing, annotating]);
+
+  /** Vai pra ocorrência idx da lista dada (a lista pode ainda não estar no estado). */
+  const goToMatch = (list: SearchMatch[], idx: number) => {
+    setCurrent(idx);
+    pendingMatchRef.current = idx < 0 ? null : idx;
+    if (idx < 0) return;
+    const m = list[idx];
+    if (m.page === 0) return; // Word: o efeito de destaque rola direto
+    const container = containerRef.current;
+    if (!container) return;
+    if (viewModeRef.current === "book") {
+      if (bookPageRef.current !== m.page) setBookPage(m.page); // render → pump rola
+      return;
+    }
+    const wrapper = container.querySelector<HTMLElement>(`[data-page="${m.page}"]`);
+    const layer = wrapper?.querySelector<HTMLElement>(".textLayer");
+    if (!(layer && getTextLayerDivs(layer))) {
+      // placeholder: aproxima; o observer renderiza e o pump rola no trecho exato
+      wrapper?.scrollIntoView({ block: "start" });
+    }
+  };
+
+  const stepMatch = (dir: 1 | -1) => {
+    const list = matchesRef.current;
+    if (list.length === 0) return;
+    const base = currentRef.current < 0 ? (dir > 0 ? -1 : 0) : currentRef.current;
+    goToMatch(list, (base + dir + list.length) % list.length);
+  };
+
+  /** 1ª ocorrência na página visível ou depois dela (senão a primeira). */
+  const firstMatchFrom = (list: SearchMatch[], page: number) => {
+    const i = list.findIndex((m) => m.page >= page);
+    return i < 0 ? 0 : i;
+  };
+
+  // consulta (debounce) → busca; PDF em background com contador ao vivo
+  useEffect(() => {
+    if (!searchOpen) return;
+    const q = query.trim();
+    pendingMatchRef.current = null;
+    if (!q) {
+      setMatches([]);
+      setCurrent(-1);
+      setSearching(false);
+      clearSearchHighlights();
+      return;
+    }
+    const ac = new AbortController();
+    const timer = setTimeout(() => {
+      if (doc) {
+        setSearching(true);
+        searchPdf(doc, q, {
+          signal: ac.signal,
+          onPage: (idx) => pageIndexRef.current.set(idx.page, idx),
+          onProgress: (found) => setMatches([...found]),
+        })
+          .then((found) => {
+            setMatches(found);
+            setSearching(false);
+            goToMatch(found, found.length ? firstMatchFrom(found, mostVisiblePage()) : -1);
+          })
+          .catch((e: unknown) => {
+            if ((e as { name?: string } | null)?.name === "AbortError") return;
+            console.error(e);
+            setSearching(false);
+            toast.error("Erro ao pesquisar no PDF");
+          });
+      } else if (docxHtml && docxRef.current) {
+        const nodes = collectTextNodes(docxRef.current);
+        // separador só na fronteira de BLOCO (parágrafo, título, item, célula);
+        // formatação inline (negrito no meio da palavra) mantém o texto contínuo
+        const blockOf = (n: Text) => n.parentElement?.closest(DOCX_BLOCKS) ?? null;
+        const parts = nodes.map((n, i) => ({
+          text: n.data,
+          sepAfter: i + 1 < nodes.length && blockOf(nodes[i + 1]) !== blockOf(n),
+        }));
+        const { text, pieces } = buildText(parts);
+        docxPiecesRef.current = { nodes, pieces };
+        const found = findMatches(normalizeForSearch(text), q).map((m) => ({ page: 0, ...m }));
+        setMatches(found);
+        goToMatch(found, found.length ? 0 : -1);
+      }
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+      ac.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, searchOpen, doc, docxHtml]);
+
+  /** (Re)aplica os destaques nos nós vivos; rola até a ocorrência pendente
+   *  quando o nó dela já existe. Chamado pelo efeito de estado e pelo pump. */
+  const applySearchHighlights = () => {
+    const list = matchesRef.current;
+    const cur = currentRef.current;
+    if (!searchOpenRef.current || list.length === 0) {
+      clearSearchHighlights();
+      return;
+    }
+    const all: Range[] = [];
+    const curRanges: Range[] = [];
+    const push = (node: Node | null | undefined, s: number, e: number, isCur: boolean) => {
+      if (!node || node.nodeType !== Node.TEXT_NODE || !node.isConnected) return;
+      const r = rangeOver(node as Text, s, e);
+      all.push(r);
+      if (isCur) curRanges.push(r);
+    };
+    const isDocx = list[0].page === 0;
+    if (isDocx) {
+      const d = docxPiecesRef.current;
+      if (d) {
+        list.forEach((m, i) => {
+          for (const seg of splitMatch(m, d.pieces)) push(d.nodes[seg.piece], seg.start, seg.end, i === cur);
+        });
+      }
+    } else {
+      const byPage = new Map<number, { m: SearchMatch; i: number }[]>();
+      list.forEach((m, i) => {
+        const arr = byPage.get(m.page);
+        if (arr) arr.push({ m, i });
+        else byPage.set(m.page, [{ m, i }]);
+      });
+      containerRef.current
+        ?.querySelectorAll<HTMLElement>("[data-annot-box]")
+        .forEach((box) => {
+          const page = Number(box.dataset.annotBox);
+          const layer = box.querySelector<HTMLElement>(".textLayer");
+          const divs = layer ? getTextLayerDivs(layer) : undefined;
+          const idx = pageIndexRef.current.get(page);
+          const onPage = byPage.get(page);
+          if (!divs || !idx || !onPage) return;
+          for (const { m, i } of onPage) {
+            for (const seg of splitMatch(m, idx.pieces)) {
+              push(divs[seg.piece]?.firstChild, seg.start, seg.end, i === cur);
+            }
+          }
+        });
+    }
+    setSearchHighlights(all, curRanges);
+    const scroller = isDocx ? docxRef.current : containerRef.current;
+    if (pendingMatchRef.current === cur && curRanges.length > 0 && scroller) {
+      const vertical = !isDocx && viewModeRef.current === "book" ? "container" : "document";
+      if (scrollToRange(curRanges[0], scroller, vertical)) pendingMatchRef.current = null;
+    }
+  };
+  const applyHighlightsRef = useRef(applySearchHighlights);
+  applyHighlightsRef.current = applySearchHighlights;
+  useEffect(() => {
+    applyHighlightsRef.current();
+  }, [matches, current, searchOpen]);
+
+  const countLabel = searching
+    ? `${matches.length}…`
+    : matches.length > 0
+      ? `${current + 1}/${matches.length}`
+      : query.trim()
+        ? "0"
+        : "";
+
   // Salvar o arquivo ABERTO no dispositivo: imagem → galeria, PDF/Word →
   // Downloads (mesma convenção de collection das telas de resultado)
   const saveOpenFile = async () => {
@@ -1375,21 +1687,22 @@ const Viewer = () => {
   // layout do modo livro: raiz presa à altura da tela (sem scroll do documento);
   // o scroll vira interno do container da página
   const bookLayout = Boolean(doc) && viewMode === "book";
+  // Objeto ESTÁVEL pro dangerouslySetInnerHTML: o React 19 re-seta o innerHTML
+  // sempre que a identidade do objeto muda (não compara o __html) — cada
+  // re-render do viewer (ex.: digitar na pesquisa) recriava os nós do Word,
+  // matando destaques (Ranges) e qualquer edição não salva no contentEditable.
+  const docxHtmlProp = useMemo(() => (docxHtml ? { __html: docxHtml } : undefined), [docxHtml]);
+  // arquivo aberto e pronto pras ações da barra inferior (funções/salvar/compartilhar)
+  const fileReady = hasContent && Boolean(blob) && Boolean(name);
 
   return (
     <div className={bookLayout ? "h-full flex flex-col overflow-hidden" : "min-h-full flex flex-col"}>
+      {/* topo: só o que mexe na LEITURA (modo, zoom, lápis); o resto (pesquisar,
+          funções, salvar, compartilhar, histórico) mora na barra inferior */}
       <header className="bg-slate-900 sticky top-0 z-10">
         <div className="flex items-center gap-3 p-3">
           <Link to="/"><ArrowLeft size={18} /></Link>
           <span className="flex-1 text-sm truncate">{name ?? "Visualizar"}</span>
-          {!editing && !annotating && (
-            <RecentsButton
-              category="viewer"
-              onPick={async (f) => {
-                await tryOpenBytes(new Uint8Array(await f.arrayBuffer()), f.name, f.type);
-              }}
-            />
-          )}
           {doc && (
             <button
               type="button"
@@ -1421,38 +1734,6 @@ const Viewer = () => {
             <button type="button" aria-label="Anotar" onClick={startAnnotating}>
               <Pencil size={18} />
             </button>
-          )}
-          {hasContent && !editing && !annotating && blob && name && (
-            <ActionsMenu
-              kind={(doc ? "pdf" : imgUrl ? "image" : "docx") as ViewerFileKind}
-              file={{
-                blob,
-                name,
-                mimeType: blob.type ||
-                  (doc ? "application/pdf" : imgUrl ? "image/png" : DOCX_MIME),
-              }}
-            >
-              {(open) => (
-                <button type="button" aria-label="Usar em outra função" title="Usar em outra função" onClick={open}>
-                  <LayoutGrid size={18} />
-                </button>
-              )}
-            </ActionsMenu>
-          )}
-          {hasContent && !editing && !annotating && blob && name && (
-            <button type="button" aria-label="Salvar no dispositivo"
-              title="Salvar no dispositivo" onClick={saveOpenFile}>
-              <Download size={18} />
-            </button>
-          )}
-          {hasContent && !editing && !annotating && blob && name && (
-            <ShareMenu payload={{ kind: "blobs", files: [{ blob, name }] }}>
-              {(open) => (
-                <button type="button" aria-label="Compartilhar" onClick={open}>
-                  <Share2 size={18} />
-                </button>
-              )}
-            </ShareMenu>
           )}
           {editing && (
             <>
@@ -1546,7 +1827,7 @@ const Viewer = () => {
             className={`docx-doc mx-auto w-full max-w-[820px] bg-white text-black rounded shadow outline-none ${
               editing ? "ring-2 ring-blue-500" : ""
             }`}
-            dangerouslySetInnerHTML={{ __html: docxHtml }}
+            dangerouslySetInnerHTML={docxHtmlProp}
           />
         </div>
       ) : doc ? (
@@ -1635,6 +1916,102 @@ const Viewer = () => {
           </button>
         </div>
       )}
+      {/* barra inferior: pesquisar · funções · salvar · compartilhar · histórico
+          (oculta em anotação/edição, que têm Salvar/Cancelar no topo). Com a
+          pesquisa aberta, a barra vira o campo de busca + contador + ▲▼. */}
+      {!editing && !annotating && (
+        <nav
+          data-bottom-bar
+          className="sticky bottom-0 z-10 bg-slate-900 border-t border-slate-800 pb-[env(safe-area-inset-bottom)]"
+        >
+          {searchOpen ? (
+            <div data-search-bar className="flex items-center gap-1.5 px-2 py-2">
+              <button type="button" aria-label="Fechar pesquisa" title="Fechar pesquisa"
+                onClick={closeSearch} className="p-1.5 text-slate-300">
+                <X size={18} />
+              </button>
+              <input
+                type="search"
+                autoFocus
+                enterKeyHint="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    stepMatch(e.shiftKey ? -1 : 1);
+                  }
+                  if (e.key === "Escape") closeSearch();
+                }}
+                placeholder="Pesquisar no documento"
+                aria-label="Pesquisar no documento"
+                className="flex-1 min-w-0 px-3 py-1.5 bg-slate-800 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <span data-search-count
+                className="text-xs tabular-nums text-slate-400 whitespace-nowrap min-w-[2.5rem] text-center">
+                {countLabel}
+              </span>
+              <button type="button" aria-label="Ocorrência anterior" title="Ocorrência anterior"
+                disabled={matches.length === 0} onClick={() => stepMatch(-1)}
+                className="p-1.5 text-slate-300 disabled:opacity-40">
+                <ChevronUp size={18} />
+              </button>
+              <button type="button" aria-label="Próxima ocorrência" title="Próxima ocorrência"
+                disabled={matches.length === 0} onClick={() => stepMatch(1)}
+                className="p-1.5 text-slate-300 disabled:opacity-40">
+                <ChevronDown size={18} />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-stretch px-1">
+              {(doc || docxHtml) && (
+                <BarBtn label="Pesquisar" onClick={() => setSearchOpen(true)}>
+                  <Search size={20} />
+                </BarBtn>
+              )}
+              {fileReady && blob && name && (
+                <ActionsMenu
+                  kind={(doc ? "pdf" : imgUrl ? "image" : "docx") as ViewerFileKind}
+                  file={{
+                    blob,
+                    name,
+                    mimeType: blob.type ||
+                      (doc ? "application/pdf" : imgUrl ? "image/png" : DOCX_MIME),
+                    password: openPassword ?? undefined,
+                  }}
+                >
+                  {(open) => (
+                    <BarBtn label="Funções" onClick={open}>
+                      <LayoutGrid size={20} />
+                    </BarBtn>
+                  )}
+                </ActionsMenu>
+              )}
+              {fileReady && (
+                <BarBtn label="Salvar" onClick={saveOpenFile}>
+                  <Download size={20} />
+                </BarBtn>
+              )}
+              {fileReady && blob && name && (
+                <ShareMenu payload={{ kind: "blobs", files: [{ blob, name }] }}>
+                  {(open) => (
+                    <BarBtn label="Compartilhar" onClick={open}>
+                      <Share2 size={20} />
+                    </BarBtn>
+                  )}
+                </ShareMenu>
+              )}
+              <RecentsButton
+                category="viewer"
+                label="Histórico"
+                onPick={async (f) => {
+                  await tryOpenBytes(new Uint8Array(await f.arrayBuffer()), f.name, f.type);
+                }}
+              />
+            </div>
+          )}
+        </nav>
+      )}
       {pwdAsk && (
         <div
           data-pwd-dialog
@@ -1661,12 +2038,26 @@ const Viewer = () => {
                 Senha incorreta, tente novamente
               </p>
             )}
+            {/* opção abaixo do campo: gera a cópia sem senha e abre ela aqui */}
+            <button
+              type="button"
+              data-pwd-unlock
+              disabled={!pwdValue || pwdBusy}
+              onClick={() => void unlockFromDialog()}
+              className="w-full flex items-center justify-center gap-2 py-2 border border-slate-600 rounded-lg text-sm text-slate-200 disabled:opacity-40"
+            >
+              <LockOpen size={14} className="text-blue-400" />
+              {pwdBusy ? "Removendo senha…" : "Remover senha deste PDF"}
+            </button>
+            <p className="text-[11px] text-slate-500 -mt-1">
+              Gera uma cópia sem senha (abre em qualquer app) e a mostra aqui.
+            </p>
             <div className="flex gap-2">
-              <button type="button" onClick={cancelPwd}
-                className="flex-1 py-2 bg-slate-700 rounded-lg text-sm">
+              <button type="button" onClick={cancelPwd} disabled={pwdBusy}
+                className="flex-1 py-2 bg-slate-700 rounded-lg text-sm disabled:opacity-40">
                 Cancelar
               </button>
-              <button type="button" disabled={!pwdValue} onClick={submitPwd}
+              <button type="button" disabled={!pwdValue || pwdBusy} onClick={submitPwd}
                 className="flex-1 py-2 bg-blue-600 rounded-lg text-sm font-medium disabled:opacity-40">
                 Abrir
               </button>

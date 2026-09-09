@@ -75,6 +75,14 @@ body { @apply bg-slate-950 text-slate-100 antialiased; }
 .textLayer ::selection { background: rgb(37 99 235 / 0.45); }
 .textLayer br::selection { background: transparent; }
 
+/* Busca no documento (searchHighlight.ts): CSS Custom Highlight API pinta os
+   Ranges das ocorrências sem tocar no DOM — no PDF o fundo acompanha o span
+   (transparente) do text layer e casa com os glifos do canvas, igual ao
+   ::selection; no Word pinta sobre o próprio texto. A ocorrência atual tem
+   prioridade maior (Highlight.priority) e cor laranja. */
+::highlight(pdf-search) { background-color: rgb(250 204 21 / 0.55); }
+::highlight(pdf-search-current) { background-color: rgb(249 115 22 / 0.8); }
+
 /* Alças NATIVAS de seleção (Android): o hit-test do arrasto encaixa a
    fronteira no texto mais próximo — vão/margem sem dono faz a seleção PULAR
    de linha (o endOfContent abaixo só governa extensão via ponteiro dentro do

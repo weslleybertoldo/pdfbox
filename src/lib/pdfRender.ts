@@ -203,6 +203,15 @@ function enableGlobalSelectionListeners(): void {
 
 type TextContent = Awaited<ReturnType<pdfjs.PDFPageProxy["getTextContent"]>>;
 
+// Registro text layer → spans (textDivs) renderizados, 1:1 com os items do
+// getTextContent da página (mesmo casamento do pdfSearch.ts). A busca do
+// viewer usa isso pra transformar uma ocorrência em Ranges sobre os spans.
+const layerDivs = new WeakMap<HTMLElement, HTMLElement[]>();
+
+/** Spans do text layer já renderizado no `container` (undefined = ainda não). */
+export const getTextLayerDivs = (container: HTMLElement): HTMLElement[] | undefined =>
+  layerDivs.get(container);
+
 /**
  * Pós-render: ajusta o `--scale-x` de cada span pela largura REAL renderizada.
  *
@@ -392,6 +401,7 @@ export function renderTextLayer(
     if (cancelled) return;
     correctSpanWidths(textContent, layer.textDivs, container, viewport);
     expandHitAreas(layer.textDivs, container, viewport);
+    layerDivs.set(container, layer.textDivs);
     // endOfContent DEPOIS dos spans (mesma ordem do TextLayerBuilder oficial)
     const end = document.createElement("div");
     end.className = "endOfContent";
@@ -405,6 +415,7 @@ export function renderTextLayer(
     cancel: () => {
       cancelled = true;
       layer?.cancel();
+      layerDivs.delete(container);
       unregisterTextLayer(container);
     },
   };
