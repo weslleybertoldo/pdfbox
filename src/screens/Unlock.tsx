@@ -9,6 +9,7 @@ import { pickFiles, readFileAsBytes } from "../lib/files";
 import { consumeActionFile, actionFileToFile } from "../lib/actionFile";
 import { addRecent } from "../lib/recents";
 import { unlockPdf, unlockedName } from "../lib/pdfUnlock";
+import DiscoverPassword from "../components/DiscoverPassword";
 
 /**
  * Remover senha: gera uma CÓPIA do PDF sem criptografia (qpdf `--decrypt`),
@@ -25,6 +26,7 @@ const Unlock = () => {
   const [prePassword, setPrePassword] = useState<string | undefined>(undefined);
   const [pwdAsk, setPwdAsk] = useState<{ file: File; wrong: boolean } | null>(null);
   const [pwdValue, setPwdValue] = useState("");
+  const [discover, setDiscover] = useState<{ bytes: Uint8Array; name: string } | null>(null);
 
   // consumo único no mount; tipo errado (não-PDF) é descartado silenciosamente
   useEffect(() => {
@@ -161,6 +163,26 @@ const Unlock = () => {
                 Senha incorreta, tente novamente
               </p>
             )}
+            {!pwdValue && (
+              <>
+                <button
+                  type="button"
+                  data-pwd-discover
+                  disabled={busy}
+                  onClick={async () => {
+                    const bytes = await readFileAsBytes(pwdAsk.file);
+                    setDiscover({ bytes, name: pwdAsk.file.name });
+                  }}
+                  className="w-full flex items-center justify-center gap-2 py-2 border border-slate-600 rounded-lg text-sm text-slate-200 disabled:opacity-40"
+                >
+                  <LockOpen size={14} className="text-blue-400" />
+                  Descobrir senha
+                </button>
+                <p className="text-[11px] text-slate-500 -mt-1">
+                  Não sabe a senha? Tento senhas comuns, datas e números para você.
+                </p>
+              </>
+            )}
             <div className="flex gap-2">
               <button type="button" onClick={() => setPwdAsk(null)}
                 className="flex-1 py-2 bg-slate-700 rounded-lg text-sm">
@@ -173,6 +195,33 @@ const Unlock = () => {
             </div>
           </div>
         </div>
+      )}
+      {discover && (
+        <DiscoverPassword
+          bytes={discover.bytes}
+          fileName={discover.name}
+          onFound={(pw, dec) => {
+            const outName = unlockedName(discover.name);
+            setDiscover(null);
+            setPwdAsk(null);
+            setPwdValue("");
+            setResult([{
+              blob: new Blob([dec.slice()], { type: "application/pdf" }),
+              name: outName,
+              collection: "downloads",
+            }]);
+            toast.success(`Senha descoberta: ${pw} — cópia sem senha pronta`);
+          }}
+          onCancel={() => setDiscover(null)}
+          onNotFound={() => {
+            setDiscover(null);
+            toast.info("Não consegui descobrir a senha automaticamente. Se você souber, digite-a.");
+          }}
+          onUnsupported={() => {
+            setDiscover(null);
+            toast.error("Não foi possível analisar a proteção deste PDF.");
+          }}
+        />
       )}
     </div>
   );
