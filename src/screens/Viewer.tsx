@@ -41,6 +41,7 @@ import ResultPanel, { type ResultFile } from "../components/ResultPanel";
 import RecentsButton from "../components/RecentsButton";
 import ShareMenu from "../components/ShareMenu";
 import ActionsMenu, { type ViewerFileKind } from "../components/ActionsMenu";
+import DiscoverPassword from "../components/DiscoverPassword";
 
 /** Botão da toolbar de edição: preventDefault no mousedown preserva a seleção. */
 const ToolBtn = ({ label, onClick, children }: {
@@ -436,6 +437,7 @@ const Viewer = () => {
   >(null);
   const [pwdValue, setPwdValue] = useState("");
   const [pwdBusy, setPwdBusy] = useState(false); // "Remover senha" rodando no dialog
+  const [discovering, setDiscovering] = useState(false); // popup Descobrir senha aberto
   // senha com que o PDF atual foi aberto — viaja no handoff SÓ pra /unlock
   // (ver decisão em actionFile.ts); nunca é gravada
   const [openPassword, setOpenPassword] = useState<string | null>(null);
@@ -510,6 +512,26 @@ const Viewer = () => {
       toast.error(`Erro ao remover senha: ${e instanceof Error ? e.message : e}`);
     } finally {
       setPwdBusy(false);
+    }
+  };
+
+  /** Descobrir senha achou: abre a cópia sem senha e mostra qual era a senha. */
+  const onDiscoverFound = async (password: string, decrypted: Uint8Array) => {
+    const outName = pwdAsk ? unlockedName(pwdAsk.name) : unlockedName(name ?? "documento.pdf");
+    setDiscovering(false);
+    try {
+      await openBytes(decrypted, outName, "application/pdf");
+      setOpenPassword(null);
+      setResult([{
+        blob: new Blob([decrypted.slice()], { type: "application/pdf" }),
+        name: outName,
+        collection: "downloads",
+      }]);
+      setPwdAsk(null);
+      setPwdValue("");
+      toast.success(`Senha descoberta: ${password} — cópia aberta sem senha`);
+    } catch (e) {
+      toast.error(`Erro ao abrir a cópia: ${e instanceof Error ? e.message : e}`);
     }
   };
 
@@ -2038,20 +2060,41 @@ const Viewer = () => {
                 Senha incorreta, tente novamente
               </p>
             )}
-            {/* opção abaixo do campo: gera a cópia sem senha e abre ela aqui */}
-            <button
-              type="button"
-              data-pwd-unlock
-              disabled={!pwdValue || pwdBusy}
-              onClick={() => void unlockFromDialog()}
-              className="w-full flex items-center justify-center gap-2 py-2 border border-slate-600 rounded-lg text-sm text-slate-200 disabled:opacity-40"
-            >
-              <LockOpen size={14} className="text-blue-400" />
-              {pwdBusy ? "Removendo senha…" : "Remover senha deste PDF"}
-            </button>
-            <p className="text-[11px] text-slate-500 -mt-1">
-              Gera uma cópia sem senha (abre em qualquer app) e a mostra aqui.
-            </p>
+            {/* opção abaixo do campo: com senha digitada = Remover; campo vazio
+                = Descobrir senha (tenta senhas comuns/datas/números) */}
+            {pwdValue ? (
+              <>
+                <button
+                  type="button"
+                  data-pwd-unlock
+                  disabled={pwdBusy}
+                  onClick={() => void unlockFromDialog()}
+                  className="w-full flex items-center justify-center gap-2 py-2 border border-slate-600 rounded-lg text-sm text-slate-200 disabled:opacity-40"
+                >
+                  <LockOpen size={14} className="text-blue-400" />
+                  {pwdBusy ? "Removendo senha…" : "Remover senha deste PDF"}
+                </button>
+                <p className="text-[11px] text-slate-500 -mt-1">
+                  Gera uma cópia sem senha (abre em qualquer app) e a mostra aqui.
+                </p>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  data-pwd-discover
+                  disabled={pwdBusy}
+                  onClick={() => setDiscovering(true)}
+                  className="w-full flex items-center justify-center gap-2 py-2 border border-slate-600 rounded-lg text-sm text-slate-200 disabled:opacity-40"
+                >
+                  <LockOpen size={14} className="text-blue-400" />
+                  Descobrir senha
+                </button>
+                <p className="text-[11px] text-slate-500 -mt-1">
+                  Não sabe a senha? Tento senhas comuns, datas e números para você.
+                </p>
+              </>
+            )}
             <div className="flex gap-2">
               <button type="button" onClick={cancelPwd} disabled={pwdBusy}
                 className="flex-1 py-2 bg-slate-700 rounded-lg text-sm disabled:opacity-40">
@@ -2064,6 +2107,22 @@ const Viewer = () => {
             </div>
           </div>
         </div>
+      )}
+      {discovering && pwdAsk && (
+        <DiscoverPassword
+          bytes={pwdAsk.bytes}
+          fileName={pwdAsk.name}
+          onFound={(pw, dec) => void onDiscoverFound(pw, dec)}
+          onCancel={() => setDiscovering(false)}
+          onNotFound={() => {
+            setDiscovering(false);
+            toast.info("Não consegui descobrir a senha automaticamente. Se você souber, digite-a.");
+          }}
+          onUnsupported={() => {
+            setDiscovering(false);
+            toast.error("Não foi possível analisar a proteção deste PDF.");
+          }}
+        />
       )}
     </div>
   );
