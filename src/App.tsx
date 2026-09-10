@@ -10,6 +10,7 @@ import Scan from "./screens/Scan";
 import CompressPdf from "./screens/CompressPdf";
 import CompressImage from "./screens/CompressImage";
 import CompressVideo from "./screens/CompressVideo";
+import Unlock from "./screens/Unlock";
 import UpdateChecker from "./components/UpdateChecker";
 import { addFileOpenedListener, getPendingFile, type ExternalFile } from "./lib/intentReceiver";
 import { setOpenFile } from "./lib/openFileStore";
@@ -46,6 +47,7 @@ const App = () => (
       <Route path="/compress/pdf" element={<CompressPdf />} />
       <Route path="/compress/image" element={<CompressImage />} />
       <Route path="/compress/video" element={<CompressVideo />} />
+      <Route path="/unlock" element={<Unlock />} />
     </Routes>
     <UpdateChecker />
     <Toaster theme="dark" position="top-center" />

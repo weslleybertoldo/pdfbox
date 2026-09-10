@@ -4,7 +4,8 @@ App Android **100% offline** de manipulação de PDF: visualizador, conversões,
 
 ## Funcionalidades
 
-- **Viewer de PDF** com navegação por páginas e zoom.
+- **Viewer de PDF/Word/imagem** com zoom, modo livro, anotações, editor de Word e **pesquisa de texto** (sem acento/caixa, com destaque e navegação entre ocorrências — PDF e Word). Barra inferior: pesquisar · funções · salvar · compartilhar · histórico.
+- **Remover senha**: gera uma cópia do PDF sem criptografia (qpdf em WebAssembly, offline); disponível na Home, no bloco de funções do viewer e no próprio dialog de senha ao abrir um PDF protegido.
 - **Conversões** (todas offline, no próprio device):
   - PDF → Imagem (PNG/JPG)
   - PDF → Word (docx)
@@ -24,6 +25,7 @@ App Android **100% offline** de manipulação de PDF: visualizador, conversões,
 - Processamento offline no cliente:
   - `pdfjs-dist` (renderização de PDF)
   - `pdf-lib` (manipulação de PDF: merge/split/remove/compress)
+  - `@neslinesli93/qpdf-wasm` (qpdf em WebAssembly: remover senha/criptografia)
   - `docx` + `mammoth` (geração/leitura de Word)
   - `xlsx` (SheetJS, Excel)
   - `tesseract.js` (OCR)
@@ -82,7 +84,7 @@ Sem esse arquivo, `assembleRelease` gera um APK não assinado.
 ```
 src/
   components/   componentes de UI (viewer, grid de páginas, checagem de update, etc.)
-  screens/      telas do app (Home, Convert, Merge, SplitRemove, CompressPdf/Image/Video, Scan, Viewer)
+  screens/      telas do app (Home, Convert, Merge, SplitRemove, CompressPdf/Image/Video, Scan, Unlock, Viewer)
   lib/          lógica: conversões (lib/convert/*), operações de PDF, OCR, updater, arquivos
   types/        tipagens auxiliares
 android/        projeto nativo Capacitor (plugins Java, gradle, manifest)

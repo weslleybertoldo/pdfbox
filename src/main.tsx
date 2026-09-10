@@ -18,6 +18,11 @@ import 'core-js/actual/iterator'
 // polyfill quebra com "getOrInsertComputed is not a function" ao renderizar
 // qualquer PDF (confirmado via Chromium 112 no build real).
 import 'core-js/actual/map/get-or-insert-computed'
+// Math.sumPrecise (Chrome ≥142): pdfjs-dist 6.2 usa no caminho de PDF
+// protegido por senha (worker E bundle principal). Sem o polyfill, WebView
+// 124 mostra "Erro ao abrir: Math.sumPrecise is not a function" em vez do
+// dialog de senha (emulador pdfbox-test, 09/09/2026).
+import 'core-js/actual/math/sum-precise'
 import 'core-js/actual/weak-map/get-or-insert-computed'
 
 import { StrictMode } from 'react'

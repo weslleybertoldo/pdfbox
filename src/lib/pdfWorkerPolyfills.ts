@@ -13,3 +13,8 @@ import "core-js/actual/iterator"; // global Iterator / Iterator Helpers (Chrome 
 import "core-js/actual/map/get-or-insert-computed"; // Map.prototype.getOrInsertComputed (Chrome ≥140)
 import "core-js/actual/weak-map/get-or-insert-computed"; // idem, WeakMap
 import "core-js/actual/array-buffer/transfer-to-fixed-length"; // ArrayBuffer#transferToFixedLength (Chrome ≥114); usado só no worker
+// Math.sumPrecise (Chrome ≥142): o pdf.js 6.2 usa ao abrir PDF PROTEGIDO
+// (caminho de criptografia) — sem isto, WebView 124 falha com "Erro ao abrir:
+// Math.sumPrecise is not a function" em vez de pedir a senha (visto no
+// emulador em 09/09/2026, v1.5.0).
+import "core-js/actual/math/sum-precise";

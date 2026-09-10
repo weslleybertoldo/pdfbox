@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import {
-  FileText, FileType, Image, Merge as MergeIcon, Minimize2, Scissors, Trash2,
+  FileText, FileType, Image, LockOpen, Merge as MergeIcon, Minimize2, Scissors, Trash2,
   type LucideIcon,
 } from "lucide-react";
 import { setActionFile, type ActionFile } from "../lib/actionFile";
@@ -26,6 +26,7 @@ const ACTIONS: Record<ViewerFileKind, ActionDef[]> = {
     { label: "Dividir PDF", route: "/pages/split", icon: Scissors },
     { label: "Remover páginas", route: "/pages/remove", icon: Trash2 },
     { label: "Juntar PDFs", route: "/merge", icon: MergeIcon },
+    { label: "Remover senha", route: "/unlock", icon: LockOpen },
   ],
   image: [
     { label: "Imagem → PDF", route: "/convert/image-to-pdf", icon: FileType },
