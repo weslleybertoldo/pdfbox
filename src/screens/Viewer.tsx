@@ -10,7 +10,8 @@ import { pickFiles, DOCX_MIME, isDocxFile } from "../lib/files";
 import { saveToDevice } from "../lib/mediaSaver";
 import {
   loadPdf,
-  renderPage,
+  startPageRender,
+  isRenderCancelled,
   renderTextLayer,
   destroyPdf,
   getTextLayerDivs,
@@ -18,6 +19,12 @@ import {
   isWrongPasswordError,
   type PdfDoc,
 } from "../lib/pdfRender";
+import { buildLinkLayer, linkTargets, resolvePageNumber } from "../lib/pdfLinks";
+import { openExternalLink } from "../lib/openLink";
+import {
+  clampGesture, clampPreview, focalScroll, scaleAbout,
+  LIVE_PIXEL_BUDGET, VIEWER_MAX_CANVAS_PIXELS,
+} from "../lib/zoomMath";
 import { unlockPdf, unlockedName } from "../lib/pdfUnlock";
 import { searchPdf, type PageIndex, type SearchMatch } from "../lib/pdfSearch";
 import {
@@ -192,6 +199,42 @@ const stretchBox = (box: HTMLElement, ratio: number) => {
   }
 };
 
+/**
+ * Stage = filho único do container (viewport/scroller) que segura as páginas e
+ * recebe o transform do preview da pinça/duplo-toque. Escalar o STAGE — e não o
+ * viewport — é o que faz o zoom-out mostrar só o gutter do app em volta da
+ * página (igual ao estado comitado) em vez de encolher a tela inteira e expor
+ * uma tarja preta lateral (defeito visto no aparelho, 18/09/2026). O stage é o
+ * item flex-1 do container e herda o papel de layout que as páginas esperavam
+ * do container (flex-col no contínuo; flex no livro, pro m-auto centralizar).
+ * `w-max`/`h-max` (+ min 100%): o box de LAYOUT do stage cobre o conteúdo
+ * inteiro — o transform do preview não muda layout, então a área rolável do
+ * container não encolhe no meio do gesto (senão o Chrome recorta scrollLeft/
+ * scrollTop enquanto a página encolhe e o conteúdo escapa dos dedos).
+ */
+const STAGE_CLASS: Record<ViewMode, string> = {
+  continuous: "flex-1 flex flex-col min-w-full w-max",
+  book: "flex-1 flex min-h-full h-max",
+};
+const getStage = (container: HTMLElement, mode: ViewMode): HTMLElement => {
+  let stage = container.querySelector<HTMLElement>(":scope > [data-stage]");
+  if (!stage) {
+    stage = document.createElement("div");
+    stage.dataset.stage = "";
+    container.replaceChildren(stage);
+  }
+  stage.className = STAGE_CLASS[mode];
+  return stage;
+};
+/** Quem recebe o transform do preview (o stage; o container se ainda não há). */
+const previewTarget = (container: HTMLElement): HTMLElement =>
+  container.querySelector<HTMLElement>(":scope > [data-stage]") ?? container;
+const clearPreview = (el: HTMLElement) => {
+  el.style.transform = "";
+  el.style.transformOrigin = "";
+  el.style.willChange = "";
+};
+
 const Viewer = () => {
   const [doc, setDoc] = useState<PdfDoc | null>(null);
   const [blob, setBlob] = useState<Blob | null>(null); // p/ compartilhar
@@ -227,6 +270,61 @@ const Viewer = () => {
   useEffect(() => {
     localStorage.setItem(VIEWER_MODE_KEY, viewMode);
   }, [viewMode]);
+  // pinça em andamento → o pump de render espera o dedo soltar (render no meio
+  // do gesto rouba a thread principal e o preview engasga); pumpRef retoma
+  const gestureRef = useRef(false);
+  const pumpRef = useRef<() => void>(() => {});
+
+  type PdfPage = Awaited<ReturnType<PdfDoc["getPage"]>>;
+  type PdfViewport = ReturnType<PdfPage["getViewport"]>;
+
+  /** Rola o contínuo até o topo da página n (48 ≈ header sticky) ou troca a
+   *  página do livro — destino dos links internos do PDF. */
+  const goToPage = (n: number) => {
+    if (!doc || n < 1 || n > doc.numPages) return;
+    if (viewModeRef.current === "book") {
+      setBookPage(n);
+      return;
+    }
+    const target = containerRef.current?.querySelector<HTMLElement>(`[data-page="${n}"]`);
+    const scroller = document.scrollingElement;
+    if (!target || !scroller) return;
+    scroller.scrollTop = Math.max(0, target.getBoundingClientRect().top + scroller.scrollTop - 48);
+  };
+  // handlers dos <a> da camada de links, lidos via ref: as páginas são
+  // montadas imperativamente e vivem mais que um render do React
+  const linkHandlersRef = useRef({
+    onUrl: (_url: string) => {},
+    onDest: (_dest: string | unknown[]) => {},
+  });
+  linkHandlersRef.current = {
+    onUrl: (url) => void openExternalLink(url),
+    onDest: (dest) => {
+      if (!doc) return;
+      void resolvePageNumber(doc, dest).then((n) => {
+        if (n) goToPage(n);
+        else toast.error("Destino do link não encontrado neste PDF");
+      });
+    },
+  };
+  /** Monta a camada de links da página dentro do box (assíncrono: lê as
+   *  anotações no worker; se o box já saiu do DOM, não faz nada). */
+  const attachLinks = async (page: PdfPage, viewport: PdfViewport, box: HTMLElement) => {
+    try {
+      const annots = await page.getAnnotations({ intent: "display" });
+      if (!box.isConnected) return;
+      const targets = linkTargets(annots, viewport);
+      if (targets.length === 0) return;
+      box.appendChild(
+        buildLinkLayer(targets, {
+          onUrl: (u) => linkHandlersRef.current.onUrl(u),
+          onDest: (d) => linkHandlersRef.current.onDest(d),
+        }),
+      );
+    } catch {
+      // anotações ilegíveis/doc destruído no meio: página segue sem links
+    }
+  };
 
   /** Página mais visível no viewport (contínuo) ou a do livro. */
   const mostVisiblePage = () => {
@@ -307,7 +405,9 @@ const Viewer = () => {
     cv.className = "absolute inset-0";
     cv.style.width = `${cssW}px`;
     cv.style.height = `${cssH}px`;
-    cv.style.zIndex = "2"; // acima do textLayer (z-index 1)
+    // acima do textLayer (1) e da camada de links (2): anotando, o toque
+    // nunca abre um link do PDF
+    cv.style.zIndex = "3";
     cv.style.touchAction = "none"; // 1 dedo = ferramenta (sem scroll nativo no overlay)
     cv.style.pointerEvents = toolRef.current === "hand" ? "none" : "auto";
     box.appendChild(cv);
@@ -626,19 +726,28 @@ const Viewer = () => {
     claimRef.current = true;
     // preview de pinch/duplo-toque sai no MESMO frame em que o conteúdo
     // esticado + scroll ajustado entram — sem "pulo" de escala no meio
-    container.style.transform = "";
-    container.style.transformOrigin = "";
+    const stage = getStage(container, "continuous");
+    clearPreview(stage);
+    clearPreview(container);
     let cancelled = false;
     const MAX_LIVE = 12;
     const wrappers: HTMLDivElement[] = [];
-    // páginas montadas: box = canvas + text layer (descartados juntos)
-    type LivePage = { box: HTMLDivElement; canvas: HTMLCanvasElement; text: { cancel: () => void } };
+    // páginas montadas: box = canvas + text layer (descartados juntos);
+    // pixels = tamanho físico do canvas, pro orçamento de memória
+    type LivePage = {
+      box: HTMLDivElement;
+      canvas: HTMLCanvasElement;
+      text: { cancel: () => void };
+      pixels: number;
+    };
     const live = new Map<number, LivePage>();
     const near = new Set<number>(); // páginas dentro do rootMargin
     const wanted = new Set<number>(); // fila de render
     let rendering = false;
+    let inflight: { cancel: () => void } | null = null; // render em andamento
     const baseW = container.clientWidth - 16;
-    // resolução física = escala CSS × DPR (nitidez em tela de alta densidade)
+    // resolução física = escala CSS × DPR (nitidez em tela de alta densidade),
+    // limitada por VIEWER_MAX_CANVAS_PIXELS (zoom alto não estoura memória)
     const dpr = window.devicePixelRatio || 1;
 
     const discard = (p: number) => {
@@ -652,8 +761,16 @@ const Viewer = () => {
       live.delete(p);
     };
 
+    // estoura o orçamento (contagem OU pixels físicos somados) → descarta as
+    // páginas mais longe do viewport primeiro
+    const livePixels = () => {
+      let sum = 0;
+      for (const e of live.values()) sum += e.pixels;
+      return sum;
+    };
+    const overBudget = () => live.size > MAX_LIVE || livePixels() > LIVE_PIXEL_BUDGET;
     const evictFar = () => {
-      if (live.size <= MAX_LIVE) return;
+      if (!overBudget()) return;
       const anchor = near.size
         ? [...near].reduce((a, b) => a + b, 0) / near.size
         : 1;
@@ -661,9 +778,27 @@ const Viewer = () => {
         .filter((p) => !near.has(p))
         .sort((a, b) => Math.abs(b - anchor) - Math.abs(a - anchor));
       for (const p of farFirst) {
-        if (live.size <= MAX_LIVE) break;
+        if (!overBudget()) break;
         discard(p);
       }
+    };
+
+    /** Próxima página a renderizar: entre as pedidas e próximas, a mais perto
+     *  do centro da tela — o que o usuário está vendo fica nítido primeiro. */
+    const pickNext = (): number | undefined => {
+      let best: number | undefined;
+      let bestDist = Infinity;
+      const mid = window.innerHeight / 2;
+      for (const p of wanted) {
+        if (!near.has(p) || live.has(p)) continue;
+        const r = wrappers[p - 1]?.getBoundingClientRect();
+        const d = r ? Math.abs((r.top + r.bottom) / 2 - mid) : Infinity;
+        if (d < bestDist) {
+          bestDist = d;
+          best = p;
+        }
+      }
+      return best;
     };
 
     // renderiza a fila sequencialmente (1 página por vez — memória e CPU suaves)
@@ -673,18 +808,34 @@ const Viewer = () => {
       try {
         for (;;) {
           if (cancelled) return;
-          const next = [...wanted].find((p) => near.has(p) && !live.has(p));
+          if (gestureRef.current) break; // pinça em curso: pumpRef retoma ao soltar
+          const next = pickNext();
           if (next === undefined) break;
           wanted.delete(next);
           const page = await doc.getPage(next);
+          if (cancelled) return;
           const scale = (baseW / page.getViewport({ scale: 1 }).width) * zoom;
-          const viewport = page.getViewport({ scale }); // tamanho CSS (lógico)
-          const canvas = await renderPage(doc, next, scale, { dpr });
+          const render = startPageRender(page, scale, { dpr, maxPixels: VIEWER_MAX_CANVAS_PIXELS });
+          inflight = render;
+          let canvas: HTMLCanvasElement;
+          try {
+            canvas = await render.promise;
+          } catch (e) {
+            if (cancelled || isRenderCancelled(e)) {
+              render.canvas.width = 0;
+              render.canvas.height = 0;
+              return;
+            }
+            throw e;
+          } finally {
+            inflight = null;
+          }
           if (cancelled) {
             canvas.width = 0;
             canvas.height = 0;
             return;
           }
+          const { viewport } = render; // tamanho CSS (lógico)
           // box relativo do tamanho CSS da página: canvas + text layer juntos
           const box = document.createElement("div");
           box.className = "relative mx-auto rounded shadow overflow-hidden";
@@ -715,7 +866,8 @@ const Viewer = () => {
             container.scrollLeft = pendingScrollLeftRef.current;
             pendingScrollLeftRef.current = null;
           }
-          live.set(next, { box, canvas, text });
+          live.set(next, { box, canvas, text, pixels: canvas.width * canvas.height });
+          void attachLinks(page, viewport, box); // links clicáveis do PDF
           // página recriada em modo anotação → overlay volta com as anotações
           if (annotatingRef.current) ensureOverlay(box);
           evictFar();
@@ -770,12 +922,12 @@ const Viewer = () => {
       last !== null &&
       last.doc === doc &&
       last.mode === "continuous" &&
-      container.querySelectorAll(":scope > [data-page]").length === doc.numPages;
+      stage.querySelectorAll(":scope > [data-page]").length === doc.numPages;
     lastRenderRef.current = { doc, mode: "continuous", zoom, page: 0 };
 
     if (reuse) {
       const ratio = zoom / last.zoom;
-      container
+      stage
         .querySelectorAll<HTMLDivElement>(":scope > [data-page]")
         .forEach((w) => {
           if (ratio !== 1) {
@@ -809,8 +961,8 @@ const Viewer = () => {
         pendingScrollLeftRef.current = null;
       }
     } else {
-      releaseCanvases(container);
-      container.innerHTML = "";
+      releaseCanvases(stage);
+      stage.innerHTML = "";
       (async () => {
         try {
           // altura estimada dos placeholders a partir da página 1 (corrigida ao renderizar)
@@ -825,7 +977,7 @@ const Viewer = () => {
             // topo continua acessível no scroll
             w.className = doc.numPages === 1 ? "my-auto" : "mb-2";
             w.style.height = `${estH}px`;
-            container.appendChild(w);
+            stage.appendChild(w);
             wrappers.push(w);
             observer.observe(w);
           }
@@ -856,8 +1008,11 @@ const Viewer = () => {
       })();
     }
 
+    pumpRef.current = () => void pump();
+
     return () => {
       cancelled = true;
+      inflight?.cancel(); // zoom mudou de novo: não termina o render velho
       observer.disconnect();
       for (const { text } of live.values()) text.cancel();
       claimRef.current = false;
@@ -866,8 +1021,8 @@ const Viewer = () => {
       // senão (unmount / arquivo não-PDF), libera canvases e esvazia
       queueMicrotask(() => {
         if (claimRef.current) return;
-        releaseCanvases(container);
-        container.replaceChildren();
+        releaseCanvases(stage);
+        stage.replaceChildren();
         lastRenderRef.current = null;
       });
     };
@@ -884,10 +1039,12 @@ const Viewer = () => {
     if (!doc || viewMode !== "book" || !containerRef.current) return;
     const container = containerRef.current;
     claimRef.current = true;
-    container.style.transform = ""; // assume o preview do pinch/duplo-toque
-    container.style.transformOrigin = "";
+    const stage = getStage(container, "book");
+    clearPreview(stage); // assume o preview do pinch/duplo-toque
+    clearPreview(container);
     let cancelled = false;
     let livePage: { canvas: HTMLCanvasElement; text: { cancel: () => void } } | null = null;
+    let inflight: { cancel: () => void } | null = null; // render em andamento
     const baseW = container.clientWidth - 16;
     const dpr = window.devicePixelRatio || 1;
 
@@ -924,21 +1081,36 @@ const Viewer = () => {
       }
       keepScroll = { left: container.scrollLeft, top: container.scrollTop };
     } else {
-      releaseCanvases(container);
-      container.replaceChildren(); // limpa o conteúdo do outro modo/página
+      releaseCanvases(stage);
+      stage.replaceChildren(); // limpa o conteúdo do outro modo/página
     }
 
     (async () => {
       try {
         const page = await doc.getPage(bookPage);
+        if (cancelled) return;
         const scale = (baseW / page.getViewport({ scale: 1 }).width) * zoom;
-        const viewport = page.getViewport({ scale });
-        const canvas = await renderPage(doc, bookPage, scale, { dpr });
+        const render = startPageRender(page, scale, { dpr, maxPixels: VIEWER_MAX_CANVAS_PIXELS });
+        inflight = render;
+        let canvas: HTMLCanvasElement;
+        try {
+          canvas = await render.promise;
+        } catch (e) {
+          if (cancelled || isRenderCancelled(e)) {
+            render.canvas.width = 0;
+            render.canvas.height = 0;
+            return;
+          }
+          throw e;
+        } finally {
+          inflight = null;
+        }
         if (cancelled) {
           canvas.width = 0;
           canvas.height = 0;
           return;
         }
+        const { viewport } = render;
         // mesma estrutura do contínuo: box (canvas + textLayer) com os
         // metadados que o modo anotação usa pra recriar o overlay
         const box = document.createElement("div");
@@ -957,13 +1129,14 @@ const Viewer = () => {
         wrapper.className = "m-auto shrink-0"; // flex + margin:auto: centraliza E rola certo
         wrapper.appendChild(box);
         // troca ATÔMICA: o double-buffer esticado sai junto da entrada do novo
-        const oldCanvases = [...container.querySelectorAll("canvas")];
-        container.replaceChildren(wrapper);
+        const oldCanvases = [...stage.querySelectorAll("canvas")];
+        stage.replaceChildren(wrapper);
         for (const cv of oldCanvases) {
           cv.width = 0;
           cv.height = 0;
         }
         livePage = { canvas, text };
+        void attachLinks(page, viewport, box); // links clicáveis do PDF
         if (annotatingRef.current) ensureOverlay(box);
         if (pendingBookScrollRef.current) {
           // pinch: restaura o ponto focal aproximado no scroll interno
@@ -988,13 +1161,14 @@ const Viewer = () => {
     })();
     return () => {
       cancelled = true;
+      inflight?.cancel();
       livePage?.text.cancel();
       claimRef.current = false;
       // mesma limpeza adiada do contínuo: só limpa se ninguém assumir o DOM
       queueMicrotask(() => {
         if (claimRef.current) return;
-        releaseCanvases(container);
-        container.replaceChildren();
+        releaseCanvases(stage);
+        stage.replaceChildren();
         lastRenderRef.current = null;
       });
     };
@@ -1260,106 +1434,183 @@ const Viewer = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [annotating, doc]);
 
-  // Pinch zoom = zoom do botão: durante o gesto, transform: scale(g) no wrapper
-  // das páginas (visual imediato, barato); ao soltar, limpa o transform e
-  // re-renderiza na escala final (mesmo fluxo/clamp 0.5–3 dos botões),
-  // preservando a posição de scroll aproximada do ponto focal. O zoom nativo
-  // da WebView está desligado (meta viewport) e touch-action: pan-x pan-y
-  // deixa o browser rolar com 1 dedo mas entrega os pointer events da pinça.
-  // Em modo anotação o pinch fica DESLIGADO (zoom pelos botões) — os pointer
-  // events do desenho têm prioridade.
+  // Pinch zoom: durante o gesto a coluna de páginas ganha will-change +
+  // transform translate(dx,dy) scale(g) — camada própria no compositor: a GPU
+  // só reamostra a textura já rasterizada (nada de re-raster por frame) e o
+  // conteúdo acompanha os DOIS movimentos dos dedos (abrir/fechar E arrastar).
+  // O pump de render fica em espera enquanto a pinça dura (gestureRef). Ao
+  // soltar, o zoom final (clamp 0.5–3, igual aos botões) é comitado e o efeito
+  // de render assume o transform no MESMO frame em que estica o conteúdo e
+  // repõe o scroll no ponto focal (focalScroll, com o deslocamento dos dedos).
+  // O zoom nativo da WebView está desligado (meta viewport) e touch-action:
+  // pan-x pan-y deixa o browser rolar com 1 dedo mas entrega os pointer events
+  // da pinça. Em modo anotação o pinch fica DESLIGADO (zoom pelos botões) — os
+  // pointer events do desenho têm prioridade.
   useEffect(() => {
     const el = containerRef.current;
     if (!doc || !el || annotating) return;
     const pointers = new Map<number, { x: number; y: number }>();
     let gesture = false;
     let g = 1; // fator do gesto (dist atual / dist inicial), clampado
+    let shift = { x: 0, y: 0 }; // deslocamento do ponto médio desde o início
     let startDist = 0;
     let startZoom = 1;
     let startMid = { x: 0, y: 0 };
     let startScrollTop = 0;
     let startOffsetTop = 0; // topo do container em coordenadas do documento
-    // modo livro: o scroll que importa é o INTERNO do container
+    // modo livro (e o eixo horizontal do contínuo): scroll INTERNO do container
     let startElScroll = { left: 0, top: 0 };
     let startRect = { left: 0, top: 0 };
+    // página (box) e área útil no início: o preview é "encaixado" onde o
+    // layout comitado vai pôr a página (clampPreview) — sem pulo ao soltar
+    let startBox: DOMRect | null = null;
+    let startStage: DOMRect | null = null; // coluna inteira (contínuo)
+    let startView = { w: 0, h: 0 };
+    let headerBottom = 0; // borda visível de cima (header sticky)
+    const PAD = 8; // p-2 do container
 
     const dist = () => {
       const [a, b] = [...pointers.values()];
       return Math.hypot(a.x - b.x, a.y - b.y);
     };
+    const mid = () => {
+      const [a, b] = [...pointers.values()];
+      return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    };
+    // o transform do preview vai no STAGE (as páginas), nunca no viewport: o
+    // viewport parado é o que faz o zoom-out mostrar só o gutter em volta da
+    // página, em vez de encolher a tela e expor uma tarja preta lateral
+    let target: HTMLElement = el;
     const clearTransform = () => {
-      el.style.transform = "";
-      el.style.transformOrigin = "";
+      clearPreview(target);
+      clearPreview(el);
+    };
+    const endGesture = () => {
+      gesture = false;
+      gestureRef.current = false;
+      pumpRef.current(); // páginas que entraram na fila durante a pinça
     };
 
     const onDown = (e: PointerEvent) => {
       if (e.pointerType !== "touch") return;
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pointers.size !== 2) return;
-      const [a, b] = [...pointers.values()];
       gesture = true;
+      gestureRef.current = true;
       g = 1;
+      shift = { x: 0, y: 0 };
       startDist = dist();
       startZoom = zoomRef.current;
-      startMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      startMid = mid();
       const scroller = document.scrollingElement;
       startScrollTop = scroller?.scrollTop ?? 0;
       const rect = el.getBoundingClientRect();
       startOffsetTop = rect.top + startScrollTop;
       startElScroll = { left: el.scrollLeft, top: el.scrollTop };
       startRect = { left: rect.left, top: rect.top };
-      el.style.transformOrigin = `${startMid.x - rect.left}px ${startMid.y - rect.top}px`;
+      startBox = el.querySelector("[data-annot-box]")?.getBoundingClientRect() ?? null;
+      startView = { w: el.clientWidth, h: el.clientHeight };
+      // origem = ponto focal em coordenadas do stage (ele pode começar acima
+      // da tela, rolado): o conteúdo sob os dedos fica parado em qualquer g
+      target = previewTarget(el);
+      const trect = target.getBoundingClientRect();
+      startStage = trect;
+      headerBottom = document.querySelector("header")?.getBoundingClientRect().bottom ?? 0;
+      target.style.transformOrigin = `${startMid.x - trect.left}px ${startMid.y - trect.top}px`;
+      target.style.willChange = "transform"; // camada própria: escala sem re-raster
     };
     const onMove = (e: PointerEvent) => {
       if (!pointers.has(e.pointerId)) return;
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (!gesture || pointers.size < 2 || startDist === 0) return;
       // clamp de g tal que a escala FINAL (startZoom*g) fique no 0.5–3 dos botões
-      g = Math.min(3 / startZoom, Math.max(0.5 / startZoom, dist() / startDist));
-      el.style.transform = `scale(${g})`;
+      g = clampGesture(dist() / startDist, startZoom, 0.5, 3);
+      const m = mid();
+      let sx = m.x - startMid.x;
+      let sy = m.y - startMid.y;
+      if (startBox) {
+        // encaixe do preview: página menor que a área útil fica centralizada,
+        // maior não abre vão nas bordas — é onde o commit vai pô-la, então o
+        // soltar não pula (e o zoom-out nunca mostra o fundo numa tarja)
+        const bw = startBox.width * g;
+        const bl = scaleAbout(startBox.left, startMid.x, g) + sx;
+        sx += clampPreview(bl, bw, startRect.left + PAD, startView.w - 2 * PAD) - bl;
+        if (viewModeRef.current === "book") {
+          // no livro a página flutua na vertical (m-auto) dentro do container
+          const bh = startBox.height * g;
+          const bt = scaleAbout(startBox.top, startMid.y, g) + sy;
+          sy += clampPreview(bt, bh, startRect.top + PAD, startView.h - 2 * PAD) - bt;
+        } else if (startStage) {
+          // no contínuo a coluna inteira rola no documento: o topo dela nunca
+          // fica abaixo do header no preview (o scroll comitado não vai a
+          // negativo) e a coluna que cabe fica alinhada ao topo (1 página:
+          // centralizada, como o my-auto)
+          const sh = startStage.height * g;
+          const st = scaleAbout(startStage.top, startMid.y, g) + sy;
+          const areaTop = Math.max(startRect.top, headerBottom) + PAD;
+          const areaH = Math.max(0, window.innerHeight - areaTop);
+          sy += clampPreview(st, sh, areaTop, areaH, doc.numPages === 1) - st;
+        }
+      }
+      shift = { x: sx, y: sy };
+      target.style.transform = `translate(${shift.x}px, ${shift.y}px) scale(${g})`;
     };
-    const onUp = (e: PointerEvent) => {
-      if (!pointers.delete(e.pointerId)) return;
-      if (!gesture || pointers.size >= 2) return;
-      gesture = false;
+    /** Fim da pinça: comita o zoom (ou só o arrasto, se a escala não mudou). */
+    const commit = () => {
       const newZoom = Math.min(3, Math.max(0.5, startZoom * g));
+      const ratio = newZoom / startZoom;
+      const fx = startMid.x - startRect.left; // foco na área visível do container
+      const fy = startMid.y - startRect.top;
       if (Math.abs(newZoom - startZoom) < 0.01) {
+        // sem zoom: o arrasto dos 2 dedos vira scroll, senão o conteúdo
+        // "voltaria" ao limpar o transform
+        if (viewModeRef.current === "book") {
+          el.scrollLeft = Math.max(0, startElScroll.left - shift.x);
+          el.scrollTop = Math.max(0, startElScroll.top - shift.y);
+        } else {
+          const scroller = document.scrollingElement;
+          if (scroller) scroller.scrollTop = Math.max(0, startScrollTop - shift.y);
+          el.scrollLeft = Math.max(0, startElScroll.left - shift.x);
+        }
         clearTransform();
         return;
       }
       // NÃO limpa o transform aqui: o preview da pinça segura a tela até o
       // efeito de render assumir (ele zera o transform no MESMO frame em que
       // estica o conteúdo e ajusta o scroll) — sem piscar nem pulo de escala
-      const ratio = newZoom / startZoom;
       if (viewModeRef.current === "book") {
         // modo livro: restaura o foco no scroll INTERNO do container
-        const fx = startMid.x - startRect.left;
-        const fy = startMid.y - startRect.top;
         pendingBookScrollRef.current = {
-          left: Math.max(0, (startElScroll.left + fx) * ratio - fx),
-          top: Math.max(0, (startElScroll.top + fy) * ratio - fy),
+          left: focalScroll({ content: startElScroll.left + fx, view: fx, ratio, shift: shift.x }),
+          top: focalScroll({ content: startElScroll.top + fy, view: fy, ratio, shift: shift.y }),
         };
       } else {
-        // scrollTop' ≈ (scrollTop + focoY - topoContainer)*ratio + topoContainer - focoY
-        pendingScrollRef.current = Math.max(
-          0,
-          (startScrollTop + startMid.y - startOffsetTop) * ratio + startOffsetTop - startMid.y,
-        );
-        // horizontal = scroll INTERNO do container (página fica mais larga que a
-        // tela): mesma fórmula do duplo-toque. Sem isto o scrollLeft ficava em 0
-        // e a página re-renderizada "escorregava" pra borda esquerda — bug visto
-        // no device ao dar pinça na lateral direita (09/09).
-        const fx = startMid.x - startRect.left;
-        pendingScrollLeftRef.current = Math.max(0, (startElScroll.left + fx) * ratio - fx);
+        // vertical = scroll do documento (o container começa em startOffsetTop);
+        // horizontal = scroll INTERNO do container (página mais larga que a
+        // tela) — sem ele a página re-renderizada "escorregava" pra borda
+        // esquerda (bug visto no device ao dar pinça na lateral direita, 09/09)
+        pendingScrollRef.current = focalScroll({
+          content: fy, view: startMid.y, ratio, shift: shift.y, base: startOffsetTop,
+        });
+        pendingScrollLeftRef.current = focalScroll({
+          content: startElScroll.left + fx, view: fx, ratio, shift: shift.x,
+        });
       }
       setZoom(newZoom); // mesmo fluxo do botão: efeito de render re-roda na nova escala
     };
+    const onUp = (e: PointerEvent) => {
+      if (!pointers.delete(e.pointerId)) return;
+      if (!gesture || pointers.size >= 2) return;
+      endGesture();
+      commit();
+    };
     const onCancel = (e: PointerEvent) => {
-      pointers.delete(e.pointerId);
-      if (gesture && pointers.size < 2) {
-        gesture = false;
-        clearTransform(); // gesto abortado: mantém o zoom atual
-      }
+      if (!pointers.delete(e.pointerId)) return;
+      if (!gesture || pointers.size >= 2) return;
+      // a WebView pode cancelar os pointers no meio da pinça: comita o que já
+      // foi feito em vez de voltar atrás (era o "pulo" de escala do vídeo)
+      endGesture();
+      commit();
     };
     // impede o scroll nativo de 2 dedos de brigar com a pinça (precisa ser
     // touchmove não-passivo; preventDefault em pointermove não bloqueia scroll)
@@ -1378,6 +1629,7 @@ const Viewer = () => {
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
       el.removeEventListener("touchmove", onTouchMove);
+      gestureRef.current = false;
       clearTransform();
     };
   }, [doc, annotating]);
@@ -1425,11 +1677,15 @@ const Viewer = () => {
           (el.scrollLeft + (fx - rect.left)) * ratio - (fx - rect.left),
         );
       }
-      el.style.transformOrigin = `${fx - rect.left}px ${fy - rect.top}px`;
+      // anima o STAGE (páginas), não o viewport — mesma razão da pinça
+      const stageEl = previewTarget(el);
+      const srect = stageEl.getBoundingClientRect();
+      stageEl.style.transformOrigin = `${fx - srect.left}px ${fy - srect.top}px`;
+      stageEl.style.willChange = "transform";
       const t0 = performance.now();
       const step = (t: number) => {
         const k = Math.min(1, (t - t0) / DBLTAP_ANIM_MS);
-        el.style.transform = `scale(${1 + (ratio - 1) * k})`;
+        stageEl.style.transform = `scale(${1 + (ratio - 1) * k})`;
         if (k < 1) anim = requestAnimationFrame(step);
         else setZoom(target); // efeito de render limpa o transform e estica
       };

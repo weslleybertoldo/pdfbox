@@ -5,6 +5,7 @@ import * as pdfjs from "pdfjs-dist";
 // não dar pra usar o `?worker&url` do Vite pra isso (ele descarta o export
 // que o pdf.js precisa no fallback "fake worker").
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { MAX_CANVAS_DIM, physicalRatio } from "./zoomMath";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl; // bundle local, sem CDN
 
@@ -39,32 +40,46 @@ export async function destroyPdf(doc: PdfDoc): Promise<void> {
   await doc.loadingTask.destroy();
 }
 
-/** Maior dimensão física permitida por canvas — zoom alto × DPR estoura o
- *  limite de canvas/memória da WebView Android. */
-const MAX_CANVAS_DIM = 4096;
+export interface RenderOpts {
+  /** Multiplica só a resolução FÍSICA do canvas (nitidez em tela densa). */
+  dpr?: number;
+  /** Teto de pixels físicos do canvas (o viewer passa VIEWER_MAX_CANVAS_PIXELS).
+   *  Sem ele só vale MAX_CANVAS_DIM — conversões que exportam imagem não
+   *  perdem resolução. */
+  maxPixels?: number;
+}
+
+/** Render em andamento: canvas já dimensionado (CSS + físico), viewport CSS,
+ *  promise do término e cancel() — o pdf.js para de desenhar e a promise
+ *  rejeita com RenderingCancelledException (ver isRenderCancelled). */
+export interface PageRenderHandle {
+  canvas: HTMLCanvasElement;
+  viewport: pdfjs.PageViewport;
+  promise: Promise<HTMLCanvasElement>;
+  cancel: () => void;
+}
 
 /**
- * Renderiza 1 página num canvas na escala dada.
+ * Começa a renderizar 1 página num canvas na escala dada, SEM esperar — o
+ * viewer guarda o handle pra cancelar quando o zoom muda de novo no meio
+ * (senão a pinça seguinte espera o render velho terminar).
  *
- * `opts.dpr` multiplica só a resolução FÍSICA do canvas (nitidez em telas de
- * alta densidade); o tamanho CSS (style.width/height) fica na escala lógica.
- * Default 1: consumidores que usam o canvas como IMAGEM (pdfToImages,
- * compressPdfStrong, thumbnails) não ganham DPR implícito — mudaria a
- * resolução dos arquivos gerados. O viewer passa window.devicePixelRatio.
- * A escala física total (scale*dpr) é limitada por MAX_CANVAS_DIM.
+ * `opts.dpr` multiplica só a resolução FÍSICA do canvas; o tamanho CSS
+ * (style.width/height) fica na escala lógica. Default 1: consumidores que usam
+ * o canvas como IMAGEM (pdfToImages, compressPdfStrong, thumbnails) não ganham
+ * DPR implícito — mudaria a resolução dos arquivos gerados. A escala física
+ * total (scale*dpr) é limitada por MAX_CANVAS_DIM e, se pedido, por maxPixels.
  */
-export async function renderPage(
-  doc: PdfDoc,
-  pageNum: number,
+export function startPageRender(
+  page: pdfjs.PDFPageProxy,
   scale: number,
-  opts?: { dpr?: number },
-): Promise<HTMLCanvasElement> {
-  const page = await doc.getPage(pageNum);
+  opts?: RenderOpts,
+): PageRenderHandle {
   const viewport = page.getViewport({ scale }); // tamanho CSS (lógico)
-  const physRatio = Math.min(
-    opts?.dpr ?? 1,
-    MAX_CANVAS_DIM / Math.max(viewport.width, viewport.height),
-  );
+  const physRatio = physicalRatio(viewport.width, viewport.height, opts?.dpr ?? 1, {
+    dim: MAX_CANVAS_DIM,
+    pixels: opts?.maxPixels,
+  });
   const physViewport =
     physRatio === 1 ? viewport : page.getViewport({ scale: scale * physRatio });
   const canvas = document.createElement("canvas");
@@ -74,8 +89,29 @@ export async function renderPage(
   canvas.style.height = `${viewport.height}px`;
   // `canvas` (não `canvasContext`) é o param aceito nesta versão do pdf.js;
   // internamente ele deriva o contexto 2D do próprio canvas.
-  await page.render({ canvas, viewport: physViewport }).promise;
-  return canvas;
+  const task = page.render({ canvas, viewport: physViewport });
+  return {
+    canvas,
+    viewport,
+    promise: task.promise.then(() => canvas),
+    cancel: () => task.cancel(),
+  };
+}
+
+/** Rejeição de um render cancelado via handle.cancel() — não é erro. */
+export const isRenderCancelled = (e: unknown): boolean =>
+  e instanceof pdfjs.RenderingCancelledException ||
+  (e as { name?: string } | null)?.name === "RenderingCancelledException";
+
+/** Renderiza 1 página num canvas na escala dada (versão que espera). */
+export async function renderPage(
+  doc: PdfDoc,
+  pageNum: number,
+  scale: number,
+  opts?: RenderOpts,
+): Promise<HTMLCanvasElement> {
+  const page = await doc.getPage(pageNum);
+  return startPageRender(page, scale, opts).promise;
 }
 
 // ── Seleção estável por arrasto (replica o TextLayerBuilder do viewer oficial
