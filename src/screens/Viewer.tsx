@@ -19,6 +19,8 @@ import {
   isWrongPasswordError,
   type PdfDoc,
 } from "../lib/pdfRender";
+import { buildLinkLayer, linkTargets, resolvePageNumber } from "../lib/pdfLinks";
+import { openExternalLink } from "../lib/openLink";
 import {
   clampGesture, clampPreview, focalScroll, scaleAbout,
   LIVE_PIXEL_BUDGET, VIEWER_MAX_CANVAS_PIXELS,
@@ -273,6 +275,57 @@ const Viewer = () => {
   const gestureRef = useRef(false);
   const pumpRef = useRef<() => void>(() => {});
 
+  type PdfPage = Awaited<ReturnType<PdfDoc["getPage"]>>;
+  type PdfViewport = ReturnType<PdfPage["getViewport"]>;
+
+  /** Rola o contínuo até o topo da página n (48 ≈ header sticky) ou troca a
+   *  página do livro — destino dos links internos do PDF. */
+  const goToPage = (n: number) => {
+    if (!doc || n < 1 || n > doc.numPages) return;
+    if (viewModeRef.current === "book") {
+      setBookPage(n);
+      return;
+    }
+    const target = containerRef.current?.querySelector<HTMLElement>(`[data-page="${n}"]`);
+    const scroller = document.scrollingElement;
+    if (!target || !scroller) return;
+    scroller.scrollTop = Math.max(0, target.getBoundingClientRect().top + scroller.scrollTop - 48);
+  };
+  // handlers dos <a> da camada de links, lidos via ref: as páginas são
+  // montadas imperativamente e vivem mais que um render do React
+  const linkHandlersRef = useRef({
+    onUrl: (_url: string) => {},
+    onDest: (_dest: string | unknown[]) => {},
+  });
+  linkHandlersRef.current = {
+    onUrl: (url) => void openExternalLink(url),
+    onDest: (dest) => {
+      if (!doc) return;
+      void resolvePageNumber(doc, dest).then((n) => {
+        if (n) goToPage(n);
+        else toast.error("Destino do link não encontrado neste PDF");
+      });
+    },
+  };
+  /** Monta a camada de links da página dentro do box (assíncrono: lê as
+   *  anotações no worker; se o box já saiu do DOM, não faz nada). */
+  const attachLinks = async (page: PdfPage, viewport: PdfViewport, box: HTMLElement) => {
+    try {
+      const annots = await page.getAnnotations({ intent: "display" });
+      if (!box.isConnected) return;
+      const targets = linkTargets(annots, viewport);
+      if (targets.length === 0) return;
+      box.appendChild(
+        buildLinkLayer(targets, {
+          onUrl: (u) => linkHandlersRef.current.onUrl(u),
+          onDest: (d) => linkHandlersRef.current.onDest(d),
+        }),
+      );
+    } catch {
+      // anotações ilegíveis/doc destruído no meio: página segue sem links
+    }
+  };
+
   /** Página mais visível no viewport (contínuo) ou a do livro. */
   const mostVisiblePage = () => {
     if (viewModeRef.current === "book") return bookPageRef.current;
@@ -352,7 +405,9 @@ const Viewer = () => {
     cv.className = "absolute inset-0";
     cv.style.width = `${cssW}px`;
     cv.style.height = `${cssH}px`;
-    cv.style.zIndex = "2"; // acima do textLayer (z-index 1)
+    // acima do textLayer (1) e da camada de links (2): anotando, o toque
+    // nunca abre um link do PDF
+    cv.style.zIndex = "3";
     cv.style.touchAction = "none"; // 1 dedo = ferramenta (sem scroll nativo no overlay)
     cv.style.pointerEvents = toolRef.current === "hand" ? "none" : "auto";
     box.appendChild(cv);
@@ -812,6 +867,7 @@ const Viewer = () => {
             pendingScrollLeftRef.current = null;
           }
           live.set(next, { box, canvas, text, pixels: canvas.width * canvas.height });
+          void attachLinks(page, viewport, box); // links clicáveis do PDF
           // página recriada em modo anotação → overlay volta com as anotações
           if (annotatingRef.current) ensureOverlay(box);
           evictFar();
@@ -1080,6 +1136,7 @@ const Viewer = () => {
           cv.height = 0;
         }
         livePage = { canvas, text };
+        void attachLinks(page, viewport, box); // links clicáveis do PDF
         if (annotatingRef.current) ensureOverlay(box);
         if (pendingBookScrollRef.current) {
           // pinch: restaura o ponto focal aproximado no scroll interno

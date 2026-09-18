@@ -134,3 +134,25 @@ body { @apply bg-slate-950 text-slate-100 antialiased; }
   user-select: none;
 }
 .textLayer.selecting .endOfContent { top: 0; }
+
+/* Camada de links do PDF (anotações /Link, montada em pdfLinks.ts): <a>
+   invisíveis posicionados em % do box da página — o double-buffer do zoom
+   estica o box via CSS e a camada acompanha sozinha. z-index 2 = acima dos
+   spans do textLayer (1) pra receber o toque; o overlay de anotação fica em 3,
+   então anotando os links ficam inertes. pointer-events só nos <a>: o resto
+   da camada deixa a seleção de texto passar. */
+.linkLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.linkLayer a {
+  position: absolute;
+  display: block;
+  pointer-events: auto;
+  border-radius: 2px;
+  -webkit-tap-highlight-color: rgb(37 99 235 / 0.35);
+  -webkit-touch-callout: none;
+}
+.linkLayer a:active { background: rgb(37 99 235 / 0.25); }
