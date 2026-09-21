@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Download, X } from "lucide-react";
 import { downloadAndInstall } from "../lib/apkUpdater";
 import { isNewerVersion } from "../lib/version";
+import { ehPlay } from "../lib/distribuicao";
 
 const CURRENT_VERSION = __APP_VERSION__;
 // Busca a última release via GitHub API (funciona em repos privados e públicos)
@@ -35,6 +36,8 @@ const UpdateChecker = () => {
   };
 
   useEffect(() => {
+    // Google Play: a loja atualiza o app; aqui nem consulta o GitHub (o App.tsx nem monta este banner).
+    if (ehPlay()) return;
     const checkUpdate = async () => {
       try {
         const res = await fetch(RELEASES_URL, { cache: "no-store" });

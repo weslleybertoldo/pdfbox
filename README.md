@@ -79,6 +79,26 @@ Sem esse arquivo, `assembleRelease` gera um APK não assinado.
 4. O app instalado detecta a nova tag (`vX.Y.Z` > versão atual) via API do GitHub e oferece
    o update in-app (download com barra de progresso + instalador do Android).
 
+## Build pra Google Play (AAB)
+
+A versão da loja é o mesmo app, com duas diferenças exigidas pela política do Google Play
+(app da loja não pode baixar e instalar APK por conta própria):
+
+- web assets gerados com `VITE_DISTRIBUICAO=play` → sem o banner "Nova versão disponível" e sem o
+  botão "Verificar atualizações" no rodapé (a Play cuida das atualizações). Ver `src/lib/distribuicao.ts`.
+- build type `playRelease` (mesma assinatura do release) → o manifest de `android/app/src/playRelease/`
+  remove a permissão `REQUEST_INSTALL_PACKAGES`.
+
+```bash
+JAVA_HOME=/caminho/para/jdk21 ANDROID_HOME=/caminho/para/android-sdk npm run build:aab
+```
+
+Saída: `android/app/build/outputs/bundle/playRelease/app-playRelease.aab` (é esse arquivo que sobe no
+Play Console). `npm run build:apk:play` gera o APK equivalente pra testar no aparelho. O `versionCode`
+segue o `package.json` (1.7.0 → 1007000), então cada envio à loja pede um bump de versão.
+
+O APK das GitHub Releases continua sendo gerado com `assembleRelease`, sem nenhuma mudança.
+
 ## Estrutura de pastas
 
 ```

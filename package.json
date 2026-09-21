@@ -8,7 +8,10 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "build:play": "VITE_DISTRIBUICAO=play npm run build",
+    "build:aab": "npm run build:play && npx cap sync android && cd android && ./gradlew :app:bundlePlayRelease",
+    "build:apk:play": "npm run build:play && npx cap sync android && cd android && ./gradlew :app:assemblePlayRelease"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",
