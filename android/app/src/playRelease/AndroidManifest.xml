@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Build da Google Play (build type playRelease): sem a permissão de instalar APK.
+     A loja proíbe app que se atualiza por fora dela; a atualização fica por conta da própria Play.
+     Os web assets desse build são gerados com VITE_DISTRIBUICAO=play (esconde o atualizador in-app). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" tools:node="remove" />
+</manifest>

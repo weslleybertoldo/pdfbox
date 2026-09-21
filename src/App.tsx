@@ -12,6 +12,7 @@ import CompressImage from "./screens/CompressImage";
 import CompressVideo from "./screens/CompressVideo";
 import Unlock from "./screens/Unlock";
 import UpdateChecker from "./components/UpdateChecker";
+import { ehPlay } from "./lib/distribuicao";
 import { addFileOpenedListener, getPendingFile, type ExternalFile } from "./lib/intentReceiver";
 import { setOpenFile } from "./lib/openFileStore";
 
@@ -49,7 +50,8 @@ const App = () => (
       <Route path="/compress/video" element={<CompressVideo />} />
       <Route path="/unlock" element={<Unlock />} />
     </Routes>
-    <UpdateChecker />
+    {/* banner de atualização só no APK do site — a Google Play atualiza sozinha */}
+    {!ehPlay() && <UpdateChecker />}
     <Toaster theme="dark" position="top-center" />
   </HashRouter>
 );

@@ -43,6 +43,14 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
+        // Google Play: igual ao release, mas o manifest de src/playRelease/ tira a permissão
+        // REQUEST_INSTALL_PACKAGES (a loja proíbe app que se atualiza por fora dela).
+        // Web assets desse build: `npm run build:aab` (VITE_DISTRIBUICAO=play esconde o atualizador).
+        playRelease {
+            initWith release
+            matchingFallbacks = ['release']
+            signingConfig signingConfigs.release
+        }
     }
 }
 

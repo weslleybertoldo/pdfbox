@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { CURRENT_VERSION } from "./UpdateChecker";
 import { isNewerVersion } from "../lib/version";
 import { downloadAndInstall } from "../lib/apkUpdater";
+import { ehPlay } from "../lib/distribuicao";
 
 type Result =
   | { status: "update"; url: string; version: string }
@@ -15,6 +16,15 @@ const FooterVersion = () => {
   const [result, setResult] = useState<Result | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [needsPerm, setNeedsPerm] = useState(false);
+
+  // Versão da Google Play: a loja cuida das atualizações — só a versão, sem "Verificar atualizações".
+  if (ehPlay()) {
+    return (
+      <footer className="py-4 text-center space-y-1" data-footer-play>
+        <p className="text-[10px] text-slate-500">v{CURRENT_VERSION}</p>
+      </footer>
+    );
+  }
 
   const handleCheck = async () => {
     setChecking(true);
