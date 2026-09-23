@@ -42,19 +42,32 @@ export function fontFaceCss(base: string): string {
 }
 
 /**
- * CSS da continuação de parágrafo criada pelo paginador: sem o marcador de
- * lista (::before) e sem contar de novo no contador da numeração.
+ * CSS base das páginas:
+ * - sem hifenização automática (padrão do Word);
+ * - desfaz o preflight do Tailwind dentro delas (a docx-preview conta com os
+ *   padrões do navegador — igual ao iframe da conversão, que não tem Tailwind):
+ *   imagem inline na linha de base (o logo do rodapé fica entre os traços),
+ *   entrelinha "normal" (espaçamento simples do Word, não o 1.5 do app),
+ *   box-sizing padrão e numeração das notas;
+ * - continuação de parágrafo criada pelo paginador: sem o marcador de lista
+ *   (::before) e sem contar de novo no contador da numeração.
  */
-const PAGINATION_CSS =
+const DOCX_BASE_CSS =
+  // hifenização: a lib liga "hyphens:auto", mas o Word só hifeniza com a opção
+  // ligada no arquivo (padrão desligada) — com auto a WebView quebrava "campe-onato"
+  "section.docxv{line-height:normal;hyphens:manual;-webkit-hyphens:manual}" +
+  "section.docxv *,section.docxv *::before,section.docxv *::after{box-sizing:content-box}" +
+  "section.docxv img,section.docxv svg{display:inline;vertical-align:baseline;max-width:none}" +
+  "section.docxv ol{list-style:decimal;padding-inline-start:40px}" +
   "section.docxv p[data-pg-cont]::before{content:none!important}" +
   "section.docxv p[data-pg-cont]{counter-increment:none!important;counter-reset:none!important}";
 
-/** Injeta @font-face + CSS da paginação no documento (1× por documento). */
+/** Injeta @font-face + CSS base das páginas no documento (1× por documento). */
 export function ensureDocxStyles(doc: Document, base: string = fontsBase()): void {
   if (doc.head.querySelector("style[data-docx-fonts]")) return;
   const style = doc.createElement("style");
   style.setAttribute("data-docx-fonts", "");
-  style.textContent = `${fontFaceCss(base)}\n${PAGINATION_CSS}`;
+  style.textContent = `${fontFaceCss(base)}\n${DOCX_BASE_CSS}`;
   doc.head.appendChild(style);
 }
 
