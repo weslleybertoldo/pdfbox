@@ -1,6 +1,7 @@
 import html2canvas from "html2canvas";
 import { PDFDocument } from "pdf-lib";
 import { canvasToBlob } from "../pdfRender";
+import { stripCssUrls } from "./cssUrls";
 
 const PAGE_W = 794; // A4 @96dpi
 const PAGE_H = 1123;
@@ -44,12 +45,6 @@ export function sanitizeHtml(html: string): string {
 
 /** URL segura para renderização offline: só recursos embutidos (nunca rede/app origin). */
 const isInlineUrl = (u: string) => /^\s*(data:|blob:|about:|#|$)/i.test(u);
-
-/** Remove url(...) não embutidas de um trecho de CSS e qualquer @import. */
-const stripCssUrls = (css: string) =>
-  css
-    .replace(/@import[^;]*;?/gi, "")
-    .replace(/url\(\s*(["']?)(?![\s"']*(?:data:|blob:|#))[^)]*\)/gi, "none");
 
 /**
  * Sweep DOM: depois do parse (com a CSP já bloqueando os loads), remove dos
