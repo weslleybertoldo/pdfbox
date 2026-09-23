@@ -22,7 +22,7 @@ import {
 import { buildLinkLayer, linkTargets, resolvePageNumber } from "../lib/pdfLinks";
 import { openExternalLink } from "../lib/openLink";
 import {
-  clampGesture, clampPreview, focalScroll, scaleAbout,
+  clampGesture, clampPreview, scaleAbout, scrollToFraction, toPageFraction,
   LIVE_PIXEL_BUDGET, VIEWER_MAX_CANVAS_PIXELS,
 } from "../lib/zoomMath";
 import { unlockPdf, unlockedName } from "../lib/pdfUnlock";
@@ -241,6 +241,107 @@ const clearPreview = (el: HTMLElement) => {
   el.style.willChange = "";
 };
 
+/**
+ * Ponto focal da pinça/duplo-toque ANCORADO NA PÁGINA: a fração (rx, ry) da
+ * página `page` que tem que parar na tela em (x, y) quando o zoom novo entrar
+ * no layout. O efeito de render mede a página de novo depois de esticar e rola
+ * a diferença — a conta proporcional ao container errava pelo que não escala
+ * (p-2, mb-2 entre páginas, my-auto/m-auto da página menor que a tela): na
+ * logo do ofício de 1 página eram ~200 px ("quando solto ele desce", 23/09/2026).
+ */
+type FocusAnchor = { page: string; rx: number; ry: number; x: number; y: number };
+/** Rect da página: o box desenhado ou, sem ele (placeholder), o wrapper. */
+const pageRect = (wrapper: HTMLElement): DOMRect =>
+  (wrapper.querySelector<HTMLElement>("[data-annot-box]") ?? wrapper).getBoundingClientRect();
+/** Âncora do ponto (x, y) na página sob ele (ou na mais perto, na vertical). */
+const anchorAt = (container: HTMLElement, x: number, y: number): FocusAnchor | null => {
+  let best: HTMLElement | null = null;
+  let bestDist = Infinity;
+  for (const w of container.querySelectorAll<HTMLElement>("[data-page]")) {
+    const r = w.getBoundingClientRect();
+    const d = Math.max(r.top - y, y - r.bottom, 0);
+    if (d < bestDist) {
+      bestDist = d;
+      best = w;
+    }
+    if (d === 0) break;
+  }
+  if (!best) return null;
+  const r = pageRect(best);
+  if (!r.width || !r.height) return null;
+  return { page: best.dataset.page ?? "", ...toPageFraction(x, y, r), x, y };
+};
+/** Rola até o ponto ancorado parar em (x, y): horizontal no container,
+ *  vertical em `scrollY` (documento no contínuo, o próprio container no livro). */
+const scrollToAnchor = (container: HTMLElement, scrollY: Element, a: FocusAnchor) => {
+  const w = container.querySelector<HTMLElement>(`[data-page="${a.page}"]`);
+  if (!w) return;
+  const { dx, dy } = scrollToFraction(a, pageRect(w));
+  container.scrollLeft += dx;
+  scrollY.scrollTop += dy;
+};
+
+/**
+ * Encaixe do preview de zoom (pinça e duplo-toque), medido no início do gesto:
+ * o preview vai pra onde o layout comitado vai pôr a página — menor que a
+ * área útil fica centralizada, maior não abre vão nas bordas —, então soltar
+ * não pula (e o zoom-out nunca mostra o fundo numa tarja).
+ */
+type PreviewFit = {
+  box: DOMRect | null; // 1ª página desenhada (largura; e altura no livro)
+  // coluna de páginas no contínuo (topo da 1ª ao fim da última) — NÃO o stage:
+  // ele é flex-1 e, com 1 página menor que a tela, sobra acima e abaixo dela
+  // (my-auto); clampar o stage deixava o preview abrir um vão acima da página
+  // que o layout comitado não tem, e o soltar pulava (23/09/2026)
+  column: { top: number; height: number } | null;
+  x: { pos: number; size: number }; // área útil horizontal (container)
+  y: { pos: number; size: number }; // vertical: container (livro); header → barra inferior (contínuo)
+  book: boolean;
+  center: boolean; // o que cabe centraliza: sempre no livro; no contínuo só 1 página (my-auto)
+};
+const PREVIEW_PAD = 8; // p-2 do container
+const measurePreviewFit = (
+  container: HTMLElement,
+  stage: HTMLElement,
+  book: boolean,
+  onePage: boolean,
+): PreviewFit => {
+  const rect = container.getBoundingClientRect();
+  const pages = stage.querySelectorAll<HTMLElement>(":scope > [data-page]");
+  const first = pages[0]?.getBoundingClientRect();
+  const last = pages[pages.length - 1]?.getBoundingClientRect();
+  let y = { pos: rect.top + PREVIEW_PAD, size: container.clientHeight - 2 * PREVIEW_PAD };
+  if (!book) {
+    // contínuo: quem rola é o documento; a borda de cima é o header sticky
+    // (ou o container, se ainda está abaixo dele) e a de baixo, a barra inferior
+    const headerBottom = document.querySelector("header")?.getBoundingClientRect().bottom ?? 0;
+    const barTop =
+      document.querySelector("[data-bottom-bar]")?.getBoundingClientRect().top ?? window.innerHeight;
+    const top = Math.max(rect.top, headerBottom) + PREVIEW_PAD;
+    y = { pos: top, size: Math.max(0, Math.min(window.innerHeight, barTop) - PREVIEW_PAD - top) };
+  }
+  return {
+    box: container.querySelector<HTMLElement>("[data-annot-box]")?.getBoundingClientRect() ?? null,
+    column: first && last ? { top: first.top, height: last.bottom - first.top } : null,
+    x: { pos: rect.left + PREVIEW_PAD, size: container.clientWidth - 2 * PREVIEW_PAD },
+    y,
+    book,
+    center: book || onePage,
+  };
+};
+/** Deslocamento (sx, sy) do preview na escala g em torno de (ox, oy), já encaixado. */
+const fitPreview = (f: PreviewFit, g: number, ox: number, oy: number, sx: number, sy: number) => {
+  if (!f.box) return { x: sx, y: sy };
+  const left = scaleAbout(f.box.left, ox, g) + sx;
+  sx += clampPreview(left, f.box.width * g, f.x.pos, f.x.size) - left;
+  const col = f.book ? { top: f.box.top, height: f.box.height } : f.column;
+  if (col) {
+    const top = scaleAbout(col.top, oy, g) + sy;
+    sy += clampPreview(top, col.height * g, f.y.pos, f.y.size, f.center) - top;
+  }
+  return { x: sx, y: sy };
+};
+
 const Viewer = () => {
   const [doc, setDoc] = useState<PdfDoc | null>(null);
   const [blob, setBlob] = useState<Blob | null>(null); // p/ compartilhar
@@ -259,10 +360,8 @@ const Viewer = () => {
   const docxRef = useRef<HTMLDivElement>(null); // scroller do DocxView (busca + scroll horizontal)
   const editRef = useRef<HTMLDivElement>(null); // contentEditable do editor
   const zoomRef = useRef(zoom); // valor atual pro handler de pinch (efeito só depende de doc)
-  const pendingScrollRef = useRef<number | null>(null); // scrollTop a aplicar após re-render de zoom
-  const pendingScrollLeftRef = useRef<number | null>(null); // scrollLeft do container (duplo-toque no contínuo)
+  const pendingFocusRef = useRef<FocusAnchor | null>(null); // ponto focal da pinça/duplo-toque, aplicado no re-render
   const pendingScrollPageRef = useRef<number | null>(null); // livro→contínuo: rolar até a página
-  const pendingBookScrollRef = useRef<{ left: number; top: number } | null>(null); // pinch no livro
   // double-buffer do zoom: estado do último render comitado + posse do container
   // (o cleanup só limpa o DOM de verdade se nenhum efeito assumir no mesmo commit)
   const lastRenderRef = useRef<{ doc: PdfDoc; mode: ViewMode; zoom: number; page: number } | null>(null);
@@ -883,12 +982,6 @@ const Viewer = () => {
             cv.width = 0;
             cv.height = 0;
           }
-          // rebuild (sem double-buffer): o scroll horizontal do ponto focal só
-          // pode ser aplicado quando existe um box largo o bastante no DOM
-          if (pendingScrollLeftRef.current !== null) {
-            container.scrollLeft = pendingScrollLeftRef.current;
-            pendingScrollLeftRef.current = null;
-          }
           live.set(next, { box, canvas, text, pixels: canvas.width * canvas.height });
           void attachLinks(page, viewport, box); // links clicáveis do PDF
           // página recriada em modo anotação → overlay volta com as anotações
@@ -962,12 +1055,14 @@ const Viewer = () => {
           observer.observe(w);
         });
       // scroll acompanha a escala nova NO MESMO frame do estico (sem pulo):
-      // pinch/duplo-toque trazem o alvo calculado no ponto focal; zoom por
+      // pinch/duplo-toque trazem o ponto focal ancorado na página; zoom por
       // botão ancora o conteúdo sob o topo visível do container
       const scroller = document.scrollingElement;
+      const focus = pendingFocusRef.current;
+      pendingFocusRef.current = null;
       if (scroller && ratio !== 1) {
-        if (pendingScrollRef.current !== null) {
-          scroller.scrollTop = pendingScrollRef.current;
+        if (focus) {
+          scrollToAnchor(container, scroller, focus);
         } else {
           const rectTop = container.getBoundingClientRect().top;
           const fy = Math.max(rectTop, 0);
@@ -977,11 +1072,6 @@ const Viewer = () => {
             (scroller.scrollTop + fy - offsetTop) * ratio + offsetTop - fy,
           );
         }
-      }
-      pendingScrollRef.current = null;
-      if (pendingScrollLeftRef.current !== null) {
-        container.scrollLeft = pendingScrollLeftRef.current;
-        pendingScrollLeftRef.current = null;
       }
     } else {
       releaseCanvases(stage);
@@ -1017,12 +1107,12 @@ const Viewer = () => {
               );
             }
           }
-          // zoom via pinch: restaura a posição de scroll aproximada do ponto focal
-          if (pendingScrollRef.current !== null) {
-            const scroller = document.scrollingElement;
-            if (scroller) scroller.scrollTop = pendingScrollRef.current;
-            pendingScrollRef.current = null;
-          }
+          // zoom via pinch sem double-buffer: ponto focal aproximado (a página
+          // ainda é placeholder com a altura estimada)
+          const focus = pendingFocusRef.current;
+          pendingFocusRef.current = null;
+          const scroller = document.scrollingElement;
+          if (focus && scroller) scrollToAnchor(container, scroller, focus);
         } catch (e) {
           if (cancelled) return;
           console.error(e);
@@ -1085,10 +1175,11 @@ const Viewer = () => {
       if (ratio !== 1) {
         const box = container.querySelector<HTMLElement>("[data-annot-box]");
         if (box) stretchBox(box, ratio);
-        if (pendingBookScrollRef.current) {
-          // pinch/duplo-toque: ponto focal calculado pelo gesto
-          container.scrollLeft = pendingBookScrollRef.current.left;
-          container.scrollTop = pendingBookScrollRef.current.top;
+        const focus = pendingFocusRef.current;
+        pendingFocusRef.current = null;
+        if (focus) {
+          // pinch/duplo-toque: ponto focal ancorado na página
+          scrollToAnchor(container, container, focus);
         } else {
           // zoom por botão: mantém o CENTRO da área visível
           container.scrollLeft = Math.max(
@@ -1100,7 +1191,6 @@ const Viewer = () => {
             (container.scrollTop + container.clientHeight / 2) * ratio - container.clientHeight / 2,
           );
         }
-        pendingBookScrollRef.current = null;
       }
       keepScroll = { left: container.scrollLeft, top: container.scrollTop };
     } else {
@@ -1161,11 +1251,11 @@ const Viewer = () => {
         livePage = { canvas, text };
         void attachLinks(page, viewport, box); // links clicáveis do PDF
         if (annotatingRef.current) ensureOverlay(box);
-        if (pendingBookScrollRef.current) {
-          // pinch: restaura o ponto focal aproximado no scroll interno
-          container.scrollLeft = pendingBookScrollRef.current.left;
-          container.scrollTop = pendingBookScrollRef.current.top;
-          pendingBookScrollRef.current = null;
+        const focus = pendingFocusRef.current;
+        if (focus) {
+          // pinch sem double-buffer: ponto focal ancorado na página recém-desenhada
+          pendingFocusRef.current = null;
+          scrollToAnchor(container, container, focus);
         } else if (keepScroll) {
           // zoom na mesma página: replaceChildren pode clampar o scroll → repõe
           container.scrollLeft = keepScroll.left;
@@ -1464,7 +1554,8 @@ const Viewer = () => {
   // O pump de render fica em espera enquanto a pinça dura (gestureRef). Ao
   // soltar, o zoom final (clamp 0.5–3, igual aos botões) é comitado e o efeito
   // de render assume o transform no MESMO frame em que estica o conteúdo e
-  // repõe o scroll no ponto focal (focalScroll, com o deslocamento dos dedos).
+  // rola até o ponto focal (ancorado na página sob os dedos) parar onde os
+  // dedos terminaram.
   // O zoom nativo da WebView está desligado (meta viewport) e touch-action:
   // pan-x pan-y deixa o browser rolar com 1 dedo mas entrega os pointer events
   // da pinça. Em modo anotação o pinch fica DESLIGADO (zoom pelos botões) — os
@@ -1480,17 +1571,10 @@ const Viewer = () => {
     let startZoom = 1;
     let startMid = { x: 0, y: 0 };
     let startScrollTop = 0;
-    let startOffsetTop = 0; // topo do container em coordenadas do documento
+    let startAnchor: FocusAnchor | null = null; // ponto da página sob os dedos
     // modo livro (e o eixo horizontal do contínuo): scroll INTERNO do container
     let startElScroll = { left: 0, top: 0 };
-    let startRect = { left: 0, top: 0 };
-    // página (box) e área útil no início: o preview é "encaixado" onde o
-    // layout comitado vai pôr a página (clampPreview) — sem pulo ao soltar
-    let startBox: DOMRect | null = null;
-    let startStage: DOMRect | null = null; // coluna inteira (contínuo)
-    let startView = { w: 0, h: 0 };
-    let headerBottom = 0; // borda visível de cima (header sticky)
-    const PAD = 8; // p-2 do container
+    let fit: PreviewFit | null = null; // encaixe do preview (medido no início)
 
     const dist = () => {
       const [a, b] = [...pointers.values()];
@@ -1527,63 +1611,29 @@ const Viewer = () => {
       startMid = mid();
       const scroller = document.scrollingElement;
       startScrollTop = scroller?.scrollTop ?? 0;
-      const rect = el.getBoundingClientRect();
-      startOffsetTop = rect.top + startScrollTop;
+      startAnchor = anchorAt(el, startMid.x, startMid.y);
       startElScroll = { left: el.scrollLeft, top: el.scrollTop };
-      startRect = { left: rect.left, top: rect.top };
-      startBox = el.querySelector("[data-annot-box]")?.getBoundingClientRect() ?? null;
-      startView = { w: el.clientWidth, h: el.clientHeight };
       // origem = ponto focal em coordenadas do stage (ele pode começar acima
       // da tela, rolado): o conteúdo sob os dedos fica parado em qualquer g
       target = previewTarget(el);
+      fit = measurePreviewFit(el, target, viewModeRef.current === "book", doc.numPages === 1);
       const trect = target.getBoundingClientRect();
-      startStage = trect;
-      headerBottom = document.querySelector("header")?.getBoundingClientRect().bottom ?? 0;
       target.style.transformOrigin = `${startMid.x - trect.left}px ${startMid.y - trect.top}px`;
       target.style.willChange = "transform"; // camada própria: escala sem re-raster
     };
     const onMove = (e: PointerEvent) => {
       if (!pointers.has(e.pointerId)) return;
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (!gesture || pointers.size < 2 || startDist === 0) return;
+      if (!gesture || pointers.size < 2 || startDist === 0 || !fit) return;
       // clamp de g tal que a escala FINAL (startZoom*g) fique no 0.5–3 dos botões
       g = clampGesture(dist() / startDist, startZoom, 0.5, 3);
       const m = mid();
-      let sx = m.x - startMid.x;
-      let sy = m.y - startMid.y;
-      if (startBox) {
-        // encaixe do preview: página menor que a área útil fica centralizada,
-        // maior não abre vão nas bordas — é onde o commit vai pô-la, então o
-        // soltar não pula (e o zoom-out nunca mostra o fundo numa tarja)
-        const bw = startBox.width * g;
-        const bl = scaleAbout(startBox.left, startMid.x, g) + sx;
-        sx += clampPreview(bl, bw, startRect.left + PAD, startView.w - 2 * PAD) - bl;
-        if (viewModeRef.current === "book") {
-          // no livro a página flutua na vertical (m-auto) dentro do container
-          const bh = startBox.height * g;
-          const bt = scaleAbout(startBox.top, startMid.y, g) + sy;
-          sy += clampPreview(bt, bh, startRect.top + PAD, startView.h - 2 * PAD) - bt;
-        } else if (startStage) {
-          // no contínuo a coluna inteira rola no documento: o topo dela nunca
-          // fica abaixo do header no preview (o scroll comitado não vai a
-          // negativo) e a coluna que cabe fica alinhada ao topo (1 página:
-          // centralizada, como o my-auto)
-          const sh = startStage.height * g;
-          const st = scaleAbout(startStage.top, startMid.y, g) + sy;
-          const areaTop = Math.max(startRect.top, headerBottom) + PAD;
-          const areaH = Math.max(0, window.innerHeight - areaTop);
-          sy += clampPreview(st, sh, areaTop, areaH, doc.numPages === 1) - st;
-        }
-      }
-      shift = { x: sx, y: sy };
+      shift = fitPreview(fit, g, startMid.x, startMid.y, m.x - startMid.x, m.y - startMid.y);
       target.style.transform = `translate(${shift.x}px, ${shift.y}px) scale(${g})`;
     };
     /** Fim da pinça: comita o zoom (ou só o arrasto, se a escala não mudou). */
     const commit = () => {
       const newZoom = Math.min(3, Math.max(0.5, startZoom * g));
-      const ratio = newZoom / startZoom;
-      const fx = startMid.x - startRect.left; // foco na área visível do container
-      const fy = startMid.y - startRect.top;
       if (Math.abs(newZoom - startZoom) < 0.01) {
         // sem zoom: o arrasto dos 2 dedos vira scroll, senão o conteúdo
         // "voltaria" ao limpar o transform
@@ -1600,25 +1650,15 @@ const Viewer = () => {
       }
       // NÃO limpa o transform aqui: o preview da pinça segura a tela até o
       // efeito de render assumir (ele zera o transform no MESMO frame em que
-      // estica o conteúdo e ajusta o scroll) — sem piscar nem pulo de escala
-      if (viewModeRef.current === "book") {
-        // modo livro: restaura o foco no scroll INTERNO do container
-        pendingBookScrollRef.current = {
-          left: focalScroll({ content: startElScroll.left + fx, view: fx, ratio, shift: shift.x }),
-          top: focalScroll({ content: startElScroll.top + fy, view: fy, ratio, shift: shift.y }),
-        };
-      } else {
-        // vertical = scroll do documento (o container começa em startOffsetTop);
-        // horizontal = scroll INTERNO do container (página mais larga que a
-        // tela) — sem ele a página re-renderizada "escorregava" pra borda
-        // esquerda (bug visto no device ao dar pinça na lateral direita, 09/09)
-        pendingScrollRef.current = focalScroll({
-          content: fy, view: startMid.y, ratio, shift: shift.y, base: startOffsetTop,
-        });
-        pendingScrollLeftRef.current = focalScroll({
-          content: startElScroll.left + fx, view: fx, ratio, shift: shift.x,
-        });
-      }
+      // estica o conteúdo e ajusta o scroll) — sem piscar nem pulo de escala.
+      // O ponto da página que começou sob os dedos vai pra onde eles
+      // terminaram no preview (nos dois eixos: sem o horizontal a página
+      // "escorregava" pra borda esquerda — bug visto no device em 09/09)
+      pendingFocusRef.current = startAnchor && {
+        ...startAnchor,
+        x: startMid.x + shift.x,
+        y: startMid.y + shift.y,
+      };
       setZoom(newZoom); // mesmo fluxo do botão: efeito de render re-roda na nova escala
     };
     const onUp = (e: PointerEvent) => {
@@ -1678,37 +1718,22 @@ const Viewer = () => {
     /** Anima o transform até a escala alvo e comita o zoom — o efeito de
      *  render assume o transform no mesmo frame do estico (double-buffer). */
     const zoomTo = (target: number, fx: number, fy: number) => {
-      const startZoom = zoomRef.current;
-      const ratio = target / startZoom;
-      const rect = el.getBoundingClientRect();
-      if (viewModeRef.current === "book") {
-        pendingBookScrollRef.current = {
-          left: Math.max(0, (el.scrollLeft + (fx - rect.left)) * ratio - (fx - rect.left)),
-          top: Math.max(0, (el.scrollTop + (fy - rect.top)) * ratio - (fy - rect.top)),
-        };
-      } else {
-        // vertical = scroll do documento; horizontal = scroll interno do container
-        const scroller = document.scrollingElement;
-        const scrollTop = scroller?.scrollTop ?? 0;
-        const offsetTop = rect.top + scrollTop;
-        pendingScrollRef.current = Math.max(
-          0,
-          (scrollTop + fy - offsetTop) * ratio + offsetTop - fy,
-        );
-        pendingScrollLeftRef.current = Math.max(
-          0,
-          (el.scrollLeft + (fx - rect.left)) * ratio - (fx - rect.left),
-        );
-      }
+      const ratio = target / zoomRef.current;
       // anima o STAGE (páginas), não o viewport — mesma razão da pinça
       const stageEl = previewTarget(el);
+      // a animação termina onde o layout comitado vai pôr a página (mesmo
+      // encaixe da pinça) e o ponto tocado, ancorado na página, vai junto
+      const book = viewModeRef.current === "book";
+      const s = fitPreview(measurePreviewFit(el, stageEl, book, doc.numPages === 1), ratio, fx, fy, 0, 0);
+      const a = anchorAt(el, fx, fy);
+      pendingFocusRef.current = a && { ...a, x: fx + s.x, y: fy + s.y };
       const srect = stageEl.getBoundingClientRect();
       stageEl.style.transformOrigin = `${fx - srect.left}px ${fy - srect.top}px`;
       stageEl.style.willChange = "transform";
       const t0 = performance.now();
       const step = (t: number) => {
         const k = Math.min(1, (t - t0) / DBLTAP_ANIM_MS);
-        stageEl.style.transform = `scale(${1 + (ratio - 1) * k})`;
+        stageEl.style.transform = `translate(${s.x * k}px, ${s.y * k}px) scale(${1 + (ratio - 1) * k})`;
         if (k < 1) anim = requestAnimationFrame(step);
         else setZoom(target); // efeito de render limpa o transform e estica
       };
