@@ -43,28 +43,34 @@ export function physicalRatio(
   return Math.min(dpr, byDim, byPixels);
 }
 
-/**
- * Scroll que mantém o ponto focal da pinça debaixo dos dedos depois do zoom.
- *
- * - `content`: posição do ponto focal DENTRO do conteúdo antes do zoom
- *   (scroll atual + posição do ponto na área visível)
- * - `view`: posição do ponto focal na área visível no INÍCIO do gesto
- * - `ratio`: zoomNovo / zoomAntigo
- * - `shift`: quanto os dedos se deslocaram durante o gesto (o conteúdo
- *   seguiu junto no preview, então o ponto focal terminou em view + shift)
- * - `base`: offset fixo do conteúdo no eixo do scroll (ex.: topo do
- *   container em coordenadas do documento, no contínuo); 0 no scroll interno
- */
-export function focalScroll(args: {
-  content: number;
-  view: number;
-  ratio: number;
-  shift?: number;
-  base?: number;
-}): number {
-  const { content, view, ratio, shift = 0, base = 0 } = args;
-  return Math.max(0, base + content * ratio - view - shift);
+/** Retângulo na tela (o DOMRect da página serve). */
+export interface ScreenRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
 }
+
+/** Ponto (x, y) da tela como fração da página `r` (0–1 dentro dela). */
+export const toPageFraction = (x: number, y: number, r: ScreenRect) => ({
+  rx: (x - r.left) / r.width,
+  ry: (y - r.top) / r.height,
+});
+
+/**
+ * Quanto rolar (dx, dy) pra fração (rx, ry) da página, medida no layout NOVO
+ * (`r`, depois do zoom), parar em (x, y) na tela — o ponto focal da pinça fica
+ * debaixo dos dedos. Medir a página de novo é o que acerta: uma conta
+ * proporcional ao container erra pelo que não escala junto (padding, vão entre
+ * páginas, margem que centraliza a página menor que a tela).
+ */
+export const scrollToFraction = (
+  a: { rx: number; ry: number; x: number; y: number },
+  r: ScreenRect,
+) => ({
+  dx: r.left + a.rx * r.width - a.x,
+  dy: r.top + a.ry * r.height - a.y,
+});
 
 /** Fator do gesto (dist atual / inicial) limitado pra que a escala FINAL
  *  (zoomInicial × g) fique dentro de [min, max]. */

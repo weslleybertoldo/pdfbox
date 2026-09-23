@@ -2,9 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   clampGesture,
   clampPreview,
-  focalScroll,
   physicalRatio,
   scaleAbout,
+  scrollToFraction,
+  toPageFraction,
   MAX_CANVAS_DIM,
   VIEWER_MAX_CANVAS_PIXELS,
 } from "./zoomMath";
@@ -30,32 +31,28 @@ describe("physicalRatio", () => {
   });
 });
 
-describe("focalScroll", () => {
-  it("equivale à fórmula antiga do contínuo quando os dedos não se movem", () => {
-    // scroll do documento 500, foco em y=300 na tela, topo do container em 200
-    // (coord. do documento) → rect.top = -300 → foco no conteúdo = 600
-    const startScrollTop = 500;
-    const focoY = 300;
-    const topoContainer = 200;
-    const ratio = 2;
-    const antiga = (startScrollTop + focoY - topoContainer) * ratio + topoContainer - focoY;
-    const nova = focalScroll({
-      content: focoY - (topoContainer - startScrollTop),
-      view: focoY,
-      ratio,
-      base: topoContainer,
-    });
-    expect(nova).toBe(antiga);
-    expect(nova).toBe(1100);
+describe("toPageFraction / scrollToFraction", () => {
+  it("sem zoom nem rolagem, o ponto já está no lugar", () => {
+    const pagina = { left: 8, top: 176, width: 396, height: 560 };
+    const f = toPageFraction(206, 246, pagina);
+    expect(f).toEqual({ rx: 0.5, ry: 0.125 });
+    expect(scrollToFraction({ ...f, x: 206, y: 246 }, pagina)).toEqual({ dx: 0, dy: 0 });
   });
-  it("desloca o alvo pelo arrasto dos dedos (conteúdo seguiu junto no preview)", () => {
-    const base = { content: 600, view: 300, ratio: 2, base: 200 };
-    expect(focalScroll({ ...base, shift: 50 })).toBe(1050); // dedos desceram 50 → rola menos
-    expect(focalScroll({ ...base, shift: -50 })).toBe(1150);
+  it("página de 1 folha centralizada (my-auto) que cresce: o vão acima dela não escala", () => {
+    // logo a 60 px do topo da página, que estava centralizada (topo em 176);
+    // ×3 a página passa da tela e o my-auto zera: topo em 84 (header 76 + p-2)
+    const antes = { left: 8, top: 176, width: 400, height: 500 };
+    const f = toPageFraction(208, 236, antes);
+    const depois = { left: 8, top: 84, width: 1200, height: 1500 };
+    // logo agora em 84 + 180 = 264 → rolar 28 pra ela voltar a y=236 (a conta
+    // proporcional ao container mandava rolar ~300 e a logo sumia pra cima)
+    expect(scrollToFraction({ ...f, x: 208, y: 236 }, depois)).toEqual({ dx: 400, dy: 28 });
   });
-  it("scroll interno (livro/horizontal): base 0 e clamp em 0", () => {
-    expect(focalScroll({ content: 120 + 80, view: 80, ratio: 1.5 })).toBe(220);
-    expect(focalScroll({ content: 10, view: 100, ratio: 0.5 })).toBe(0);
+  it("leva o ponto até onde os dedos terminaram (arrasto no preview)", () => {
+    const f = toPageFraction(100, 300, { left: 0, top: 200, width: 400, height: 400 });
+    const depois = { left: -100, top: 0, width: 800, height: 800 }; // ×2
+    // ponto em (100, 200) na página nova; dedos terminaram em (150, 250)
+    expect(scrollToFraction({ ...f, x: 150, y: 250 }, depois)).toEqual({ dx: -50, dy: -50 });
   });
 });
 
