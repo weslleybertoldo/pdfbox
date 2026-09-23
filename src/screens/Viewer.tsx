@@ -49,6 +49,8 @@ import RecentsButton from "../components/RecentsButton";
 import ShareMenu from "../components/ShareMenu";
 import ActionsMenu, { type ViewerFileKind } from "../components/ActionsMenu";
 import DiscoverPassword from "../components/DiscoverPassword";
+import DocxView from "../components/DocxView";
+import { prepareDocx, type PreparedDocx } from "../lib/docx/render";
 
 /** Botão da toolbar de edição: preventDefault no mousedown preserva a seleção. */
 const ToolBtn = ({ label, onClick, children }: {
@@ -89,13 +91,17 @@ const BarBtn = ({ label, onClick, disabled, children }: {
   </button>
 );
 
-/** Elementos de BLOCO do HTML do mammoth (fronteira de texto na busca do Word). */
+/** Elementos de BLOCO das páginas do Word (fronteira de texto na busca). */
 const DOCX_BLOCKS = "p, h1, h2, h3, h4, h5, h6, li, td, th, pre, blockquote, div";
 
 /** Nós de texto (não vazios) sob root, em ordem de documento — busca no Word. */
 const collectTextNodes = (root: HTMLElement): Text[] => {
   const out: Text[] = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  // o CSS da docx-preview mora num <style> dentro do DocxView: fora da busca
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) =>
+      n.parentElement?.closest("style") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+  });
   for (let n = walker.nextNode(); n; n = walker.nextNode()) {
     if ((n as Text).data.length > 0) out.push(n as Text);
   }
@@ -240,7 +246,8 @@ const Viewer = () => {
   const [blob, setBlob] = useState<Blob | null>(null); // p/ compartilhar
   const [name, setName] = useState<string | null>(null);
   const [imgUrl, setImgUrl] = useState<string | null>(null); // modo imagem
-  const [docxHtml, setDocxHtml] = useState<string | null>(null); // modo Word (mammoth, sanitizado)
+  const [docxDoc, setDocxDoc] = useState<PreparedDocx | null>(null); // modo Word (fiel, docx-preview)
+  const [editHtml, setEditHtml] = useState<string | null>(null); // HTML do mammoth, só durante a edição
   const [editing, setEditing] = useState(false); // modo docx: contentEditable ligado
   const [result, setResult] = useState<ResultFile[] | null>(null); // .docx salvo da edição
   const [zoom, setZoom] = useState(1);
@@ -249,7 +256,8 @@ const Viewer = () => {
   );
   const [bookPage, setBookPage] = useState(1); // página atual do modo livro (1-based)
   const containerRef = useRef<HTMLDivElement>(null);
-  const docxRef = useRef<HTMLDivElement>(null);
+  const docxRef = useRef<HTMLDivElement>(null); // scroller do DocxView (busca + scroll horizontal)
+  const editRef = useRef<HTMLDivElement>(null); // contentEditable do editor
   const zoomRef = useRef(zoom); // valor atual pro handler de pinch (efeito só depende de doc)
   const pendingScrollRef = useRef<number | null>(null); // scrollTop a aplicar após re-render de zoom
   const pendingScrollLeftRef = useRef<number | null>(null); // scrollLeft do container (duplo-toque no contínuo)
@@ -499,16 +507,20 @@ const Viewer = () => {
     // .slice() garante Uint8Array<ArrayBuffer> (BlobPart) e evita o detach
     // do buffer pelo worker do pdf.js (loadPdf também copia internamente)
     const b = new Blob([bytes.slice()], { type: mimeType });
-    let next: { doc: PdfDoc | null; docxHtml: string | null; imgUrl: string | null };
+    let next: { doc: PdfDoc | null; docxDoc: PreparedDocx | null; imgUrl: string | null };
     if (isDocxFile(fileName, mimeType)) {
-      // sanitizeHtml: o HTML vai pro DOM principal (contentEditable), sem o
-      // iframe sandbox da conversão — scripts/on*/refs externas caem antes
-      const html = sanitizeHtml(await docxToHtml(new File([b], fileName)));
-      next = { doc: null, imgUrl: null, docxHtml: html };
+      // prepara e valida ANTES de trocar o que está na tela (abrir é atômico)
+      let prepared: PreparedDocx;
+      try {
+        prepared = await prepareDocx(bytes);
+      } catch {
+        throw new Error("não foi possível abrir este Word");
+      }
+      next = { doc: null, imgUrl: null, docxDoc: prepared };
     } else if (mimeType.startsWith("image/")) {
-      next = { doc: null, docxHtml: null, imgUrl: URL.createObjectURL(b) };
+      next = { doc: null, docxDoc: null, imgUrl: URL.createObjectURL(b) };
     } else {
-      next = { imgUrl: null, docxHtml: null, doc: await loadPdf(bytes, password) };
+      next = { imgUrl: null, docxDoc: null, doc: await loadPdf(bytes, password) };
     }
     // ── commit (parse ok): os efeitos de cleanup destroem o doc antigo
     // (destroyPdf) e revogam o imgUrl antigo quando doc/imgUrl mudam
@@ -520,7 +532,8 @@ const Viewer = () => {
     setResult(null);
     exitAnnotating(); // troca de arquivo descarta anotações em andamento
     setDoc(next.doc);
-    setDocxHtml(next.docxHtml);
+    setDocxDoc(next.docxDoc);
+    setEditHtml(null);
     setImgUrl(next.imgUrl);
     // abriu com sucesso (qualquer origem) → registra no histórico do viewer
     void addRecent("viewer", { name: fileName, mime: mimeType, blob: b });
@@ -657,26 +670,36 @@ const Viewer = () => {
     }
   };
 
-  const startEdit = () => {
-    setResult(null);
-    setEditing(true);
+  /** Editar: o editor ainda é o de texto (mammoth); a leitura fiel volta ao sair. */
+  const startEdit = async () => {
+    if (!blob) return;
+    try {
+      // sanitizeHtml: o HTML vai pro DOM principal (contentEditable), sem o
+      // iframe sandbox da conversão — scripts/on*/refs externas caem antes
+      setEditHtml(sanitizeHtml(await docxToHtml(new File([blob], name ?? "documento.docx"))));
+      setResult(null);
+      setEditing(true);
+    } catch (e) {
+      toast.error(`Erro ao editar: ${e instanceof Error ? e.message : e}`);
+    }
   };
 
-  /** Cancelar: restaura o HTML de leitura (React não re-seta __html igual). */
   const cancelEdit = () => {
-    if (docxRef.current && docxHtml) docxRef.current.innerHTML = docxHtml;
     setEditing(false);
+    setEditHtml(null);
   };
 
   const saveEdit = async () => {
-    const root = docxRef.current;
+    const root = editRef.current;
     if (!root) return;
     try {
       const out = await editedDomToDocx(root);
       const base = (name ?? "documento").replace(/\.docx$/i, "");
-      setDocxHtml(root.innerHTML); // leitura (e futuros cancelar) = versão salva
+      // leitura = versão salva, renderizada fiel como qualquer .docx
+      setDocxDoc(await prepareDocx(new Uint8Array(await out.arrayBuffer())));
       setResult([{ blob: out, name: `${base}-editado.docx`, collection: "downloads" }]);
       setEditing(false);
+      setEditHtml(null);
     } catch (e) {
       toast.error(`Erro ao salvar: ${e instanceof Error ? e.message : e}`);
     }
@@ -684,7 +707,7 @@ const Viewer = () => {
 
   // foco no documento ao entrar em edição (abre o teclado no Android)
   useEffect(() => {
-    if (editing) docxRef.current?.focus();
+    if (editing) editRef.current?.focus();
   }, [editing]);
 
   // Arquivo vindo de fora (ACTION_VIEW ou botão Visualizar) — consumido do
@@ -1749,13 +1772,13 @@ const Viewer = () => {
     };
   }, [doc, annotating]);
 
-  const hasContent = Boolean(doc || imgUrl || docxHtml);
+  const hasContent = Boolean(doc || imgUrl || docxDoc);
 
   // ── Pesquisa no documento ────────────────────────────────────────────────
   // PDF: índice por página (pdfSearch.ts, getTextContent) → ocorrências →
   // Ranges sobre os spans do text layer das páginas VIVAS (virtualização) via
   // CSS Custom Highlight API (searchHighlight.ts). Word: mesmo núcleo sobre
-  // os nós de texto do HTML do mammoth. Navegar: contínuo rola o documento
+  // os nós de texto das páginas do Word. Navegar: contínuo rola o documento
   // (página ainda não renderizada → scrollIntoView do placeholder e o pump
   // termina o trabalho ao renderizar); livro troca a página. Destaques são
   // re-aplicados a cada página renderizada (pump) e a cada mudança de estado.
@@ -1790,7 +1813,7 @@ const Viewer = () => {
     docxPiecesRef.current = null;
     if (searchOpenRef.current) closeSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, docxHtml, imgUrl, editing, annotating]);
+  }, [doc, docxDoc, imgUrl, editing, annotating]);
 
   /** Vai pra ocorrência idx da lista dada (a lista pode ainda não estar no estado). */
   const goToMatch = (list: SearchMatch[], idx: number) => {
@@ -1858,7 +1881,7 @@ const Viewer = () => {
             setSearching(false);
             toast.error("Erro ao pesquisar no PDF");
           });
-      } else if (docxHtml && docxRef.current) {
+      } else if (docxDoc && docxRef.current) {
         const nodes = collectTextNodes(docxRef.current);
         // separador só na fronteira de BLOCO (parágrafo, título, item, célula);
         // formatação inline (negrito no meio da palavra) mantém o texto contínuo
@@ -1879,7 +1902,7 @@ const Viewer = () => {
       ac.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, searchOpen, doc, docxHtml]);
+  }, [query, searchOpen, doc, docxDoc]);
 
   /** (Re)aplica os destaques nos nós vivos; rola até a ocorrência pendente
    *  quando o nó dela já existe. Chamado pelo efeito de estado e pelo pump. */
@@ -1967,9 +1990,8 @@ const Viewer = () => {
   const bookLayout = Boolean(doc) && viewMode === "book";
   // Objeto ESTÁVEL pro dangerouslySetInnerHTML: o React 19 re-seta o innerHTML
   // sempre que a identidade do objeto muda (não compara o __html) — cada
-  // re-render do viewer (ex.: digitar na pesquisa) recriava os nós do Word,
-  // matando destaques (Ranges) e qualquer edição não salva no contentEditable.
-  const docxHtmlProp = useMemo(() => (docxHtml ? { __html: docxHtml } : undefined), [docxHtml]);
+  // re-render do viewer recriava os nós e matava a edição não salva.
+  const editHtmlProp = useMemo(() => (editHtml ? { __html: editHtml } : undefined), [editHtml]);
   // arquivo aberto e pronto pras ações da barra inferior (funções/salvar/compartilhar)
   const fileReady = hasContent && Boolean(blob) && Boolean(name);
 
@@ -1991,7 +2013,7 @@ const Viewer = () => {
               {viewMode === "book" ? <ScrollText size={18} /> : <BookOpen size={18} />}
             </button>
           )}
-          {(doc || imgUrl) && (
+          {(doc || imgUrl || (docxDoc && !editing)) && (
             <>
               <button type="button" aria-label="Diminuir zoom"
                 onClick={() => setZoom((z) => Math.max(0.5, z - 0.25))}>
@@ -2003,8 +2025,8 @@ const Viewer = () => {
               </button>
             </>
           )}
-          {docxHtml && !editing && (
-            <button type="button" aria-label="Editar" onClick={startEdit}>
+          {docxDoc && !editing && (
+            <button type="button" aria-label="Editar" onClick={() => void startEdit()}>
               <Pencil size={18} />
             </button>
           )}
@@ -2094,19 +2116,29 @@ const Viewer = () => {
             className="mx-auto rounded shadow max-w-full"
             style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }} />
         </div>
-      ) : docxHtml ? (
-        <div key="docx" className="flex-1 p-3 space-y-3">
-          {result && <ResultPanel files={result} />}
-          {/* documento "papel": fundo branco e texto preto num app dark */}
-          <div
-            ref={docxRef}
-            contentEditable={editing}
-            suppressContentEditableWarning
-            className={`docx-doc mx-auto w-full max-w-[820px] bg-white text-black rounded shadow outline-none ${
-              editing ? "ring-2 ring-blue-500" : ""
-            }`}
-            dangerouslySetInnerHTML={docxHtmlProp}
-          />
+      ) : docxDoc ? (
+        <div key="docx" className="flex-1 flex flex-col">
+          {result && <div className="p-3 pb-0"><ResultPanel files={result} /></div>}
+          {editing ? (
+            <div className="p-3">
+              {/* documento "papel": fundo branco e texto preto num app dark */}
+              <div
+                ref={editRef}
+                contentEditable
+                suppressContentEditableWarning
+                className="docx-doc mx-auto w-full max-w-[820px] bg-white text-black rounded shadow outline-none ring-2 ring-blue-500"
+                dangerouslySetInnerHTML={editHtmlProp}
+              />
+            </div>
+          ) : (
+            <DocxView
+              ref={docxRef}
+              prepared={docxDoc}
+              zoom={zoom}
+              onZoom={setZoom}
+              onError={(e) => toast.error(`Erro ao mostrar o Word: ${e instanceof Error ? e.message : e}`)}
+            />
+          )}
         </div>
       ) : doc ? (
         // wrapper relativo: ancora a caixa de texto flutuante (que rola junto
@@ -2242,7 +2274,7 @@ const Viewer = () => {
             </div>
           ) : (
             <div className="flex items-stretch px-1">
-              {(doc || docxHtml) && (
+              {(doc || docxDoc) && (
                 <BarBtn label="Pesquisar" onClick={() => setSearchOpen(true)}>
                   <Search size={20} />
                 </BarBtn>

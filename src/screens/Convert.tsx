@@ -70,11 +70,11 @@ const ACTIONS: Record<string, ActionCfg> = {
   },
   "word-to-pdf": {
     title: "Word → PDF", accept: ".docx",
-    run: async ([f]) => [pdfBlob(await docxToPdf(f), `${baseName(f)}.pdf`)],
+    run: async ([f], _fmt, onP) => [pdfBlob(await docxToPdf(f, onP), `${baseName(f)}.pdf`)],
   },
   "word-to-image": {
     title: "Word → Imagem", accept: ".docx", askFormat: true,
-    run: async ([f], fmt) => imgFiles(await docxToImages(f, baseName(f), fmt)),
+    run: async ([f], fmt, onP) => imgFiles(await docxToImages(f, baseName(f), fmt, onP)),
   },
   "html-to-pdf": {
     title: "HTML → PDF/Imagem", accept: ".html,.htm", askFormat: true,

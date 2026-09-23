@@ -23,6 +23,13 @@ body { @apply bg-slate-950 text-slate-100 antialiased; }
 .docx-doc table { border-collapse: collapse; margin: 0.5em 0; }
 .docx-doc td, .docx-doc th { border: 1px solid #cbd5e1; padding: 2px 6px; }
 
+/* Word fiel no viewer: páginas brancas sobre o fundo do app */
+[data-docx-stage] section.docxv {
+  background: #fff;
+  box-shadow: 0 1px 6px rgb(0 0 0 / 0.5);
+  margin: 0 auto 12px;
+}
+
 /* Text layer do pdf.js v6 (seleção/cópia no viewer) — CSS mínimo extraído de
    pdfjs-dist/web/pdf_viewer.css (importar o arquivo inteiro traria annotation/
    editor layers que não usamos). As dimensões do container e o font-size dos

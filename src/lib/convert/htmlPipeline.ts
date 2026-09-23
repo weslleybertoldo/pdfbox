@@ -1,16 +1,20 @@
 import html2canvas from "html2canvas";
 import { PDFDocument } from "pdf-lib";
 import { canvasToBlob } from "../pdfRender";
+import { stripCssUrls } from "./cssUrls";
 
 const PAGE_W = 794; // A4 @96dpi
 const PAGE_H = 1123;
 const SCALE = 2;
 
-/** Uma página A4 já rasterizada e comprimida (JPEG/PNG). */
+/** Uma página já rasterizada e comprimida (JPEG/PNG). */
 export interface PageImage {
   blob: Blob;
   width: number;
   height: number;
+  /** tamanho da página no PDF em pt (padrão: A4 retrato 595×842) */
+  pageWidthPt?: number;
+  pageHeightPt?: number;
 }
 
 /** CSP injetada no <head> do iframe sandbox: nada de rede (só data:/blob: e CSS inline). */
@@ -44,12 +48,6 @@ export function sanitizeHtml(html: string): string {
 
 /** URL segura para renderização offline: só recursos embutidos (nunca rede/app origin). */
 const isInlineUrl = (u: string) => /^\s*(data:|blob:|about:|#|$)/i.test(u);
-
-/** Remove url(...) não embutidas de um trecho de CSS e qualquer @import. */
-const stripCssUrls = (css: string) =>
-  css
-    .replace(/@import[^;]*;?/gi, "")
-    .replace(/url\(\s*(["']?)(?![\s"']*(?:data:|blob:|#))[^)]*\)/gi, "none");
 
 /**
  * Sweep DOM: depois do parse (com a CSP já bloqueando os loads), remove dos
@@ -154,7 +152,7 @@ export async function htmlToPageImages(
   }
 }
 
-/** Páginas rasterizadas → PDF (cada imagem vira uma página A4). */
+/** Páginas rasterizadas → PDF (cada imagem vira uma página; A4 se não disser o tamanho). */
 export async function pageImagesToPdf(pages: PageImage[]): Promise<Uint8Array> {
   if (pages.length === 0) throw new Error("nenhuma página para converter");
   const doc = await PDFDocument.create();
@@ -162,10 +160,12 @@ export async function pageImagesToPdf(pages: PageImage[]): Promise<Uint8Array> {
     const bytes = new Uint8Array(await p.blob.arrayBuffer());
     const img =
       p.blob.type === "image/png" ? await doc.embedPng(bytes) : await doc.embedJpg(bytes);
-    // página A4 em pontos (595x842), imagem ocupa a largura
-    const page = doc.addPage([595, 842]);
-    const h = (img.height / img.width) * 595;
-    page.drawImage(img, { x: 0, y: 842 - h, width: 595, height: h });
+    // página em pontos (A4 = 595x842), imagem ocupa a largura a partir do topo
+    const pw = p.pageWidthPt ?? 595;
+    const ph = p.pageHeightPt ?? 842;
+    const page = doc.addPage([pw, ph]);
+    const h = (img.height / img.width) * pw;
+    page.drawImage(img, { x: 0, y: ph - h, width: pw, height: h });
   }
   return doc.save();
 }
