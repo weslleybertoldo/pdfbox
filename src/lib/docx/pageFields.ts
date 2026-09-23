@@ -67,22 +67,31 @@ export function markPageFields(xml: string): string {
   }
 
   // 2) campo complexo: begin → instrText → separate → resultado → end, em runs
-  //    irmãs (pilha: campo dentro de campo mexe só no de dentro)
-  const stack: { instr: string; inResult: boolean; ts: Element[] }[] = [];
+  //    irmãs ou numa run só (pilha: campo dentro de campo mexe só no de dentro).
+  //    Sem valor salvo (comum em .docx gerado por biblioteca), o marcador entra
+  //    como um w:t novo logo depois do separate (ou antes do end, se não tem).
+  const stack: { instr: string; inResult: boolean; ts: Element[]; sep: Element | null }[] = [];
   for (const r of Array.from(doc.getElementsByTagNameNS(W, "r"))) {
     for (const c of Array.from(r.childNodes)) {
       const top = stack[stack.length - 1];
       if (isW(c, "fldChar")) {
         const type = wAttr(c, "fldCharType");
-        if (type === "begin") stack.push({ instr: "", inResult: false, ts: [] });
-        else if (type === "separate" && top) top.inResult = true;
-        else if (type === "end" && top) {
+        if (type === "begin") stack.push({ instr: "", inResult: false, ts: [], sep: null });
+        else if (type === "separate" && top) {
+          top.inResult = true;
+          top.sep = c;
+        } else if (type === "end" && top) {
           stack.pop();
           const mark = markFor(top.instr);
-          if (mark && top.ts.length > 0) {
-            putMark(top.ts, mark);
-            changed = true;
+          if (!mark) continue;
+          if (top.ts.length > 0) putMark(top.ts, mark);
+          else {
+            const t = doc.createElementNS(W, "w:t");
+            t.textContent = mark;
+            const anchor = top.sep ?? c;
+            anchor.parentNode?.insertBefore(t, top.sep ? top.sep.nextSibling : c);
           }
+          changed = true;
         }
       } else if (isW(c, "instrText") && top && !top.inResult) {
         top.instr += c.textContent ?? "";
@@ -91,6 +100,35 @@ export function markPageFields(xml: string): string {
       }
     }
   }
+  // 3) run com campo misturado a texto: a docx-preview pula a run INTEIRA quando
+  //    ela tem fldChar/instrText (renderRun → fieldRun) e o texto some junto
+  //    (.docx gerado por biblioteca põe "Página " + campo numa run só). Separa:
+  //    cada fldChar/instrText na própria run; o resto em runs com a mesma formatação.
+  const isField = (e: Node) => isW(e, "fldChar") || isW(e, "instrText");
+  for (const r of Array.from(doc.getElementsByTagNameNS(W, "r"))) {
+    const kids = Array.from(r.childNodes).filter((n): n is Element => n.nodeType === 1);
+    if (!kids.some(isField) || kids.every((e) => isField(e) || isW(e, "rPr"))) continue;
+    const parent = r.parentNode;
+    if (!parent) continue;
+    const rPr = kids.find((e) => isW(e, "rPr")) ?? null;
+    const newRun = () => {
+      const n = doc.createElementNS(W, "w:r");
+      if (rPr) n.appendChild(rPr.cloneNode(true));
+      parent.insertBefore(n, r);
+      return n;
+    };
+    let cur: Element | null = null;
+    for (const e of kids) {
+      if (e === rPr) continue;
+      if (isField(e)) {
+        newRun().appendChild(e);
+        cur = null;
+      } else (cur ??= newRun()).appendChild(e);
+    }
+    parent.removeChild(r);
+    changed = true;
+  }
+
   return changed ? new XMLSerializer().serializeToString(doc) : xml;
 }
 

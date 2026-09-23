@@ -23,9 +23,9 @@ const STYLES = [
   { weight: 700, style: "italic", suffix: "BoldItalic" },
 ] as const;
 
-/** URL absoluta da pasta das fontes, resolvida contra a página do app. */
+/** URL absoluta da pasta das fontes (public/ do Vite, respeitando o base do build). */
 export const fontsBase = (doc: Pick<Document, "baseURI"> = document): string =>
-  new URL("fonts/docx/", doc.baseURI).href;
+  new URL(`${import.meta.env.BASE_URL}fonts/docx/`, doc.baseURI).href;
 
 /** @font-face das famílias embutidas, com os NOMES do Word. */
 export function fontFaceCss(base: string): string {
