@@ -59,6 +59,10 @@ const DOCX_BASE_CSS =
   "section.docxv *,section.docxv *::before,section.docxv *::after{box-sizing:content-box}" +
   "section.docxv img,section.docxv svg{display:inline;vertical-align:baseline;max-width:none}" +
   "section.docxv ol{list-style:decimal;padding-inline-start:40px}" +
+  // célula sem tblCellMar: margem padrão do Word (0 em cima/embaixo, 0,19 cm dos lados), não o 1 px do
+  // navegador — +1,5 pt por linha de tabela (90 linhas: 3 páginas × 2 no LibreOffice). :where = não
+  // passa na frente da margem que a lib escreve (inline) nem da do estilo de tabela
+  ":where(section.docxv) td{padding:0 5.4pt}" +
   "section.docxv p[data-pg-cont]::before{content:none!important}" +
   "section.docxv p[data-pg-cont]{counter-increment:none!important;counter-reset:none!important}";
 
