@@ -6,6 +6,7 @@ import { sanitizeDocxDom } from "./sanitize";
 import { paginate, type Chrome, type ChromeFor } from "./paginate";
 import { DOCX_CLASS } from "./paginateCore";
 import { DEFAULT_TAB_TWIPS, expandTabMarks, layoutTabs, markTabs, readStyleTabs } from "./tabs";
+import { compatMode, shrinkJustifiedSpaces } from "./justify";
 
 export { DOCX_CLASS };
 
@@ -39,6 +40,8 @@ export interface PreparedDocx {
   families: string[];
   /** 1ª página com cabeçalho próprio / pares e ímpares diferentes; 1 seção só? */
   chrome: { titlePg: boolean; evenOdd: boolean; singleSection: boolean };
+  /** Word 2013+ (compatibilityMode ≥ 15): justificado encolhe os espaços (justify.ts) */
+  shrinkJustify: boolean;
 }
 
 const FIELD_PARTS = /^word\/(document|header\d*|footer\d*)\.xml$/;
@@ -105,6 +108,7 @@ export async function prepareDocx(bytes: Uint8Array): Promise<PreparedDocx> {
       evenOdd: flagOn(settingsXml, "evenAndOddHeaders"),
       singleSection: (documentXml.match(/<w:sectPr[\s>]/g) ?? []).length <= 1,
     },
+    shrinkJustify: compatMode(settingsXml) >= 15,
   };
 }
 
@@ -118,6 +122,7 @@ export async function renderDocxInto(
   families: string[],
   pagesEl: HTMLElement,
   stylesEl: HTMLElement,
+  shrinkJustify = false,
 ): Promise<void> {
   const doc = pagesEl.ownerDocument;
   ensureDocxStyles(doc);
@@ -130,6 +135,7 @@ export async function renderDocxInto(
   sanitizeDocxDom(pagesEl);
   expandTabMarks(pagesEl);
   await doc.fonts?.ready;
+  if (shrinkJustify) shrinkJustifiedSpaces(pagesEl); // antes das tabulações: muda onde cada uma começa
   layoutTabs(pagesEl);
 }
 
@@ -158,7 +164,7 @@ async function probeChrome(
   const stylesEl = doc.createElement("div");
   host.append(stylesEl, pagesEl);
   try {
-    await renderDocxInto(blob, p.families, pagesEl, stylesEl);
+    await renderDocxInto(blob, p.families, pagesEl, stylesEl, p.shrinkJustify);
     const pages = Array.from(pagesEl.querySelectorAll<HTMLElement>(`section.${DOCX_CLASS}`));
     const pick = (s: HTMLElement | undefined): Chrome => ({
       header: (s?.querySelector(":scope > header")?.cloneNode(true) as Element | undefined) ?? null,
@@ -180,7 +186,7 @@ export async function renderPaginated(
   pagesEl: HTMLElement,
   stylesEl: HTMLElement,
 ): Promise<number> {
-  await renderDocxInto(p.blob, p.families, pagesEl, stylesEl);
+  await renderDocxInto(p.blob, p.families, pagesEl, stylesEl, p.shrinkJustify);
   let chromeFor: ChromeFor | undefined;
   if (p.chrome.singleSection && (p.chrome.titlePg || p.chrome.evenOdd)) {
     const v = await probeChrome(p, pagesEl.parentElement ?? pagesEl.ownerDocument.body);
