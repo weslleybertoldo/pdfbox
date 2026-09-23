@@ -5,6 +5,7 @@ import { ensureDocxStyles, familiesIn, loadDocxFonts } from "./fonts";
 import { sanitizeDocxDom } from "./sanitize";
 import { paginate, type Chrome, type ChromeFor } from "./paginate";
 import { DOCX_CLASS } from "./paginateCore";
+import { DEFAULT_TAB_TWIPS, expandTabMarks, layoutTabs, markTabs, readStyleTabs } from "./tabs";
 
 export { DOCX_CLASS };
 
@@ -13,7 +14,7 @@ export { DOCX_CLASS };
  * com HTML vindo do arquivo, SEM sandbox, na origem do app (onde está a ponte
  * nativa) — nunca ligar. experimental: false porque o modo experimental
  * recalcula as tabulações 500 ms depois do render e mudaria o layout depois
- * da paginação.
+ * da paginação — quem calcula as tabulações é o tabs.ts, antes de paginar.
  */
 export const DOCX_OPTIONS = {
   className: DOCX_CLASS,
@@ -41,6 +42,7 @@ export interface PreparedDocx {
 }
 
 const FIELD_PARTS = /^word\/(document|header\d*|footer\d*)\.xml$/;
+const TAB_PARTS = /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/;
 const FONT_PARTS = /^word\/(document|styles|fontTable|theme\/theme\d*)\.xml$/;
 
 /** Flag booleana do OOXML presente e não desligada (<w:x/> ou w:val diferente de 0/false). */
@@ -50,35 +52,44 @@ const flagOn = (xml: string, tag: string): boolean => {
 };
 
 /**
- * Prepara o .docx: marca os campos de página, descobre as fontes e valida com o
- * parser da docx-preview. Lança se não for um .docx legível — o viewer só
- * troca de arquivo depois disto (abrir continua atômico).
+ * Prepara o .docx: marca os campos de página e as tabulações, descobre as
+ * fontes e valida com o parser da docx-preview. Lança se não for um .docx
+ * legível — o viewer só troca de arquivo depois disto (abrir continua atômico).
  */
 export async function prepareDocx(bytes: Uint8Array): Promise<PreparedDocx> {
   const zip = await JSZip.loadAsync(bytes);
   const fontXml: string[] = [];
+  const parts = new Map<string, string>();
   let documentXml = "";
   let settingsXml = "";
+  let stylesXml = "";
   let changed = false;
   for (const name of Object.keys(zip.files)) {
     const entry = zip.file(name);
     if (!entry) continue;
     if (name === "word/settings.xml") settingsXml = await entry.async("string");
-    const isField = FIELD_PARTS.test(name);
+    const isPart = TAB_PARTS.test(name);
     const isFont = FONT_PARTS.test(name);
-    if (!isField && !isFont) continue;
+    if (!isPart && !isFont) continue;
     const xml = await entry.async("string");
     if (isFont) fontXml.push(xml);
     if (name === "word/document.xml") documentXml = xml;
-    if (isField) {
-      const marked = markPageFields(xml);
-      if (marked !== xml) {
-        zip.file(name, marked);
-        changed = true;
-      }
-    }
+    if (name === "word/styles.xml") stylesXml = xml;
+    if (isPart) parts.set(name, xml);
   }
   if (!documentXml) throw new Error("arquivo sem corpo de documento");
+  // tabulações depois de ler tudo: as paradas vêm também dos estilos
+  const styleTabs = readStyleTabs(stylesXml);
+  const defTab = /<w:defaultTabStop\s[^>]*w:val="(\d+)"/.exec(settingsXml);
+  const defTwips = defTab ? parseInt(defTab[1], 10) : DEFAULT_TAB_TWIPS;
+  for (const [name, xml] of parts) {
+    const fields = FIELD_PARTS.test(name) ? markPageFields(xml) : xml;
+    const marked = markTabs(fields, styleTabs, defTwips);
+    if (marked !== xml) {
+      zip.file(name, marked);
+      changed = true;
+    }
+  }
   const blob = changed
     ? await zip.generateAsync({ type: "blob", compression: "STORE" })
     : new Blob([bytes.slice()]);
@@ -117,7 +128,9 @@ export async function renderDocxInto(
   for (const n of nodes) (n.nodeName === "STYLE" ? stylesEl : pagesEl).appendChild(n);
   sanitizeDocxDom(stylesEl);
   sanitizeDocxDom(pagesEl);
+  expandTabMarks(pagesEl);
   await doc.fonts?.ready;
+  layoutTabs(pagesEl);
 }
 
 const BR_PAGE = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
