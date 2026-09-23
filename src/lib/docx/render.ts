@@ -7,6 +7,8 @@ import { paginate, type Chrome, type ChromeFor } from "./paginate";
 import { DOCX_CLASS } from "./paginateCore";
 import { DEFAULT_TAB_TWIPS, expandTabMarks, layoutTabs, markTabs, readStyleTabs } from "./tabs";
 import { compatMode, shrinkJustifiedSpaces } from "./justify";
+import { applyWordLineHeights } from "./lineHeight";
+import { fillEmptyParagraphs } from "./emptyParagraphs";
 
 export { DOCX_CLASS };
 
@@ -87,7 +89,7 @@ export async function prepareDocx(bytes: Uint8Array): Promise<PreparedDocx> {
   const defTwips = defTab ? parseInt(defTab[1], 10) : DEFAULT_TAB_TWIPS;
   for (const [name, xml] of parts) {
     const fields = FIELD_PARTS.test(name) ? markPageFields(xml) : xml;
-    const marked = markTabs(fields, styleTabs, defTwips);
+    const marked = fillEmptyParagraphs(markTabs(fields, styleTabs, defTwips));
     if (marked !== xml) {
       zip.file(name, marked);
       changed = true;
@@ -135,6 +137,7 @@ export async function renderDocxInto(
   sanitizeDocxDom(pagesEl);
   expandTabMarks(pagesEl);
   await doc.fonts?.ready;
+  applyWordLineHeights(pagesEl, stylesEl);
   if (shrinkJustify) shrinkJustifiedSpaces(pagesEl); // antes das tabulações: muda onde cada uma começa
   layoutTabs(pagesEl);
 }

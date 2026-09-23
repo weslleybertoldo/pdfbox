@@ -251,6 +251,7 @@ export function layoutTabs(root: HTMLElement): void {
     for (const [span, { width, leader }] of writes) {
       span.textContent = "";
       span.style.display = "inline-block";
+      span.style.minHeight = "0"; // o ".docxv span" da lib dá min-height de 1 corpo: esticava a linha (+1,2 pt)
       span.style.width = `${width.toFixed(2)}pt`;
       if (leader) span.style.borderBottom = `1px ${leader === "." ? "dotted" : "solid"} currentColor`;
     }
