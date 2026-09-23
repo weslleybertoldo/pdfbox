@@ -79,7 +79,9 @@ página gigante. Por isso:
 - **Cabeçalho/rodapé das páginas novas:** variante da seção conforme a página — padrão; 1ª página
   diferente (`titlePg`) só na 1ª página da seção; par/ímpar (`evenAndOddHeaders`) pela paridade do número
   da página. Variante que não existir no DOM renderizado vem de uma **sonda**: render do mesmo `.docx` com
-  o corpo trocado por 3 parágrafos vazios separados por quebra de página e a mesma `sectPr`.
+  o corpo trocado por 3 parágrafos vazios separados por quebra de página e a mesma `sectPr`. Vale para
+  documento de **uma seção** (o caso comum); com várias seções, a página nova repete o cabeçalho e o
+  rodapé da página de onde saiu.
 - **Número de página:** campos `PAGE` e `NUMPAGES` (simples `w:fldSimple` e complexos
   `w:fldChar`/`w:instrText`) de cabeçalho, rodapé e corpo mostram o número real de cada página e o total.
   Antes do render, o XML recebe um marcador no lugar do resultado do campo; depois da paginação, cada
@@ -181,6 +183,9 @@ O `.docx` é entrada não confiável e a WebView do Capacitor tem a ponte nativa
 - Paginar seções com colunas (ficam transbordando).
 - Redistribuir notas de rodapé entre páginas criadas pelo paginador (ficam na página onde a lib as pôs).
 - Formas e caixas de texto flutuantes além do que a `docx-preview` já faz.
+- Parada de tabulação personalizada: a tabulação vira um espaço fixo, como a `docx-preview` faz por
+  padrão (`experimental: false`). O modo experimental dela recalcula as tabulações 500 ms depois do
+  render, mudando o layout depois da paginação.
 - Fontes além das 6 famílias.
 
 ## Riscos
