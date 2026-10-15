@@ -12,20 +12,24 @@ import CompressImage from "./screens/CompressImage";
 import CompressVideo from "./screens/CompressVideo";
 import Unlock from "./screens/Unlock";
 import UpdateChecker from "./components/UpdateChecker";
+import AndroidBack from "./components/AndroidBack";
+import { EXTERNAL_ENTRY_STATE } from "./lib/backAction";
 import { ehPlay } from "./lib/distribuicao";
 import { addFileOpenedListener, getPendingFile, type ExternalFile } from "./lib/intentReceiver";
 import { setOpenFile } from "./lib/openFileStore";
 
 /**
- * Abre no Viewer arquivos vindos de ACTION_VIEW ("Abrir com → PDFBox"):
- * cold start (getPendingFile no mount) e app já aberto (evento fileOpened).
+ * Abre no Viewer arquivos vindos de outro app ("Abrir com" ou Compartilhar →
+ * PDFBox): cold start (getPendingFile no mount) e app já aberto (evento
+ * fileOpened). A entrada ganha a marca de "aberta por outro app": o voltar
+ * dali pergunta "Deseja sair?" e volta pro app que mandou o arquivo.
  */
 const ExternalFileOpener = () => {
   const navigate = useNavigate();
   useEffect(() => {
     const open = (f: ExternalFile) => {
       setOpenFile(f);
-      navigate("/viewer");
+      navigate("/viewer", { state: EXTERNAL_ENTRY_STATE });
     };
     void getPendingFile().then((f) => {
       if (f) open(f);
@@ -38,6 +42,7 @@ const ExternalFileOpener = () => {
 const App = () => (
   <HashRouter>
     <ExternalFileOpener />
+    <AndroidBack />
     <Routes>
       <Route path="/" element={<Home />} />
       <Route path="/viewer" element={<Viewer />} />
