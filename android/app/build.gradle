@@ -38,9 +38,13 @@ android {
         }
     }
     buildTypes {
+        // R8 ligado nos 2 builds (o playRelease herda pelo initWith): regra de qualidade da Google Play para
+        // envios a partir de fev/2027 — app com mais de 10 MB de DEX precisa de ≥ 25% de otimização,
+        // encolhimento e ofuscação. O "-optimize" é o que deixa o R8 otimizar (o proguard-android.txt traz -dontoptimize).
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             signingConfig signingConfigs.release
         }
         // Google Play: igual ao release, mas o manifest de src/playRelease/ tira a permissão
