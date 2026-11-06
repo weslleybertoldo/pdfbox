@@ -5,7 +5,10 @@ import { toast } from "sonner";
 import ProgressBar from "../components/ProgressBar";
 import ResultPanel, { type ResultFile } from "../components/ResultPanel";
 import RecentsButton from "../components/RecentsButton";
-import { pickFiles, readFileAsBytes, isDocxFile, DOCX_MIME, IMG_ACCEPT } from "../lib/files";
+import {
+  pickFiles, readFileAsBytes, isWordFile, DOCX_MIME, DOC_MIME, IMG_ACCEPT, WORD_ACCEPT,
+} from "../lib/files";
+import { wordAsDocx } from "../lib/convert/docToDocx";
 import { consumeActionFile, actionFileToFile } from "../lib/actionFile";
 import { addRecent } from "../lib/recents";
 import { isPasswordError, PASSWORD_PROTECTED_MSG } from "../lib/pdfErrors";
@@ -69,12 +72,14 @@ const ACTIONS: Record<string, ActionCfg> = {
     },
   },
   "word-to-pdf": {
-    title: "Word → PDF", accept: ".docx",
-    run: async ([f], _fmt, onP) => [pdfBlob(await docxToPdf(f, onP), `${baseName(f)}.pdf`)],
+    title: "Word → PDF", accept: WORD_ACCEPT,
+    run: async ([f], _fmt, onP) =>
+      [pdfBlob(await docxToPdf(await wordAsDocx(f), onP), `${baseName(f)}.pdf`)],
   },
   "word-to-image": {
-    title: "Word → Imagem", accept: ".docx", askFormat: true,
-    run: async ([f], fmt, onP) => imgFiles(await docxToImages(f, baseName(f), fmt, onP)),
+    title: "Word → Imagem", accept: WORD_ACCEPT, askFormat: true,
+    run: async ([f], fmt, onP) =>
+      imgFiles(await docxToImages(await wordAsDocx(f), baseName(f), fmt, onP)),
   },
   "html-to-pdf": {
     title: "HTML → PDF/Imagem", accept: ".html,.htm", askFormat: true,
@@ -100,6 +105,7 @@ const defaultFmt = (action: string): Fmt =>
 const EXT_MIME: Record<string, string> = {
   pdf: "application/pdf",
   docx: DOCX_MIME,
+  doc: DOC_MIME,
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   html: "text/html",
   htm: "text/html",
@@ -114,7 +120,7 @@ const mimeFor = (f: File): string =>
 /** O arquivo (vindo do viewer) serve pra esta ação? — compara com o accept. */
 const acceptsFile = (accept: string, name: string, mime: string): boolean =>
   accept.split(",").some((a) =>
-    a === ".docx" ? isDocxFile(name, mime) : a.includes("/") && a === mime);
+    a === ".docx" ? isWordFile(name, mime) : a.includes("/") && a === mime);
 
 const Convert = () => {
   const { action = "" } = useParams();

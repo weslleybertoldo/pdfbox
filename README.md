@@ -110,3 +110,20 @@ src/
 android/        projeto nativo Capacitor (plugins Java, gradle, manifest)
 docs/           specs e planos de desenvolvimento
 ```
+
+## Licença
+
+O PDFBox é software livre sob a **GNU AGPL v3** (`LICENSE`), desde a v1.9.0 — o
+conversor de Word 97-2003 (`.doc` → `.docx`, offline) é o **x2t do ONLYOFFICE**
+(AGPL v3), compilado pra WebAssembly pela CryptPad
+([onlyoffice-x2t-wasm](https://github.com/cryptpad/onlyoffice-x2t-wasm), versão
+`v9.3.2+4`; código do ONLYOFFICE em https://github.com/ONLYOFFICE/core). Os
+arquivos `public/x2t/x2t.js` e `public/x2t/x2t.wasm` vêm de
+`scripts/fetch-x2t.sh` (sha512 conferido) e a licença deles vai junto no app
+(`public/x2t/LICENSE-ONLYOFFICE.txt`). O rodapé do app leva ao código-fonte.
+
+As demais dependências mantêm as próprias licenças (MIT, Apache-2.0, OFL nas
+fontes de `public/fonts/docx/LICENSES.md`). O `docx-preview` recebe um patch
+local (`patches/docx-preview+0.4.1.patch`, aplicado no `postinstall` pelo
+`patch-package`): caixas de texto, grupos e imagens VML viram HTML (o `.doc`
+antigo convertido usa muito) e a direção de texto `lrTb` volta a ser horizontal.

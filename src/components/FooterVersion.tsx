@@ -5,6 +5,21 @@ import { CURRENT_VERSION } from "./UpdateChecker";
 import { isNewerVersion } from "../lib/version";
 import { downloadAndInstall } from "../lib/apkUpdater";
 import { ehPlay } from "../lib/distribuicao";
+import { openExternalLink } from "../lib/openLink";
+
+/** Código-fonte (AGPL-3.0, por causa do conversor de .doc do ONLYOFFICE). */
+export const REPO_URL = "https://github.com/weslleybertoldo/pdfbox";
+
+const CodigoAberto = () => (
+  <button
+    type="button"
+    onClick={() => void openExternalLink(REPO_URL)}
+    className="mx-auto block text-[10px] text-slate-500 hover:text-blue-400 transition-colors"
+    data-codigo-aberto
+  >
+    Código aberto · AGPL-3.0
+  </button>
+);
 
 type Result =
   | { status: "update"; url: string; version: string }
@@ -22,6 +37,7 @@ const FooterVersion = () => {
     return (
       <footer className="py-4 text-center space-y-1" data-footer-play>
         <p className="text-[10px] text-slate-500">v{CURRENT_VERSION}</p>
+        <CodigoAberto />
       </footer>
     );
   }
@@ -65,6 +81,7 @@ const FooterVersion = () => {
   return (
     <footer className="py-4 text-center space-y-1">
       <p className="text-[10px] text-slate-500">v{CURRENT_VERSION}</p>
+      <CodigoAberto />
       <button
         type="button"
         onClick={handleCheck}

@@ -6,7 +6,10 @@ import {
   ScrollText, Search, Share2, Type, Undo2, X, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { toast } from "sonner";
-import { pickFiles, DOCX_MIME, isDocxFile } from "../lib/files";
+import {
+  pickFiles, DOCX_MIME, DOC_MIME, isDocxFile, isLegacyDocFile, isWordFile, WORD_ACCEPT,
+} from "../lib/files";
+import { docToDocx, docxName } from "../lib/convert/docToDocx";
 import { saveToDevice } from "../lib/mediaSaver";
 import {
   loadPdf,
@@ -591,6 +594,16 @@ const Viewer = () => {
     }
   };
 
+  /** .doc → .docx com aviso na tela (a 1ª conversão compila o conversor: alguns segundos). */
+  const convertLegacyDoc = async (bytes: Uint8Array): Promise<Uint8Array> => {
+    const aviso = toast.loading("Convertendo Word antigo (.doc)…");
+    try {
+      return await docToDocx(bytes);
+    } finally {
+      toast.dismiss(aviso);
+    }
+  };
+
   /**
    * Abre bytes de qualquer origem (picker, intent externo, ResultPanel).
    * ATÔMICO: parseia PRIMEIRO (sem tocar em nenhum estado) e só comita a
@@ -598,11 +611,17 @@ const Viewer = () => {
    * anterior (header, conteúdo, Compartilhar, anotações) fica 100% intacto.
    */
   const openBytes = async (
-    bytes: Uint8Array,
-    fileName: string,
-    mimeType: string,
+    rawBytes: Uint8Array,
+    rawName: string,
+    rawMime: string,
     password?: string,
   ) => {
+    // Word 97-2003 (.doc): converte pra .docx no aparelho (offline) e daqui
+    // em diante é um .docx como outro qualquer (tela, histórico, Salvar).
+    const legacy = isLegacyDocFile(rawName, rawMime);
+    const bytes = legacy ? await convertLegacyDoc(rawBytes) : rawBytes;
+    const fileName = legacy ? docxName(rawName) : rawName;
+    const mimeType = legacy ? DOCX_MIME : rawMime;
     // .slice() garante Uint8Array<ArrayBuffer> (BlobPart) e evita o detach
     // do buffer pelo worker do pdf.js (loadPdf também copia internamente)
     const b = new Blob([bytes.slice()], { type: mimeType });
@@ -748,10 +767,12 @@ const Viewer = () => {
   };
 
   const handleOpen = async () => {
-    const [f] = await pickFiles(`application/pdf,${DOCX_MIME},.docx`);
+    const [f] = await pickFiles(`application/pdf,${WORD_ACCEPT}`);
     if (!f) return;
     try {
-      const mime = isDocxFile(f.name, f.type) ? DOCX_MIME : "application/pdf";
+      const mime = isDocxFile(f.name, f.type)
+        ? DOCX_MIME
+        : isWordFile(f.name, f.type) ? DOC_MIME : "application/pdf";
       await tryOpenBytes(new Uint8Array(await f.arrayBuffer()), f.name, mime);
     } catch (e) {
       // tryOpenBytes não lança — só o arrayBuffer() do File chega aqui

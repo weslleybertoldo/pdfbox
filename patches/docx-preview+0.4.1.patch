@@ -1,0 +1,253 @@
+diff --git a/node_modules/docx-preview/dist/docx-preview.mjs b/node_modules/docx-preview/dist/docx-preview.mjs
+index 35fb7e7..d486bd2 100644
+--- a/node_modules/docx-preview/dist/docx-preview.mjs
++++ b/node_modules/docx-preview/dist/docx-preview.mjs
+@@ -1270,6 +1270,7 @@ class VmlElement extends OpenXmlElementBase {
+         super(...arguments);
+         this.type = DomType.VmlElement;
+         this.attrs = {};
++        this.vml = {};
+     }
+ }
+ function parseVmlElement(elem, parser) {
+@@ -1293,6 +1294,9 @@ function parseVmlElement(elem, parser) {
+             result.tagName = "foreignObject";
+             Object.assign(result.attrs, { width: '100%', height: '100%' });
+             break;
++        case "group":
++            result.tagName = "group";
++            break;
+         default:
+             return null;
+     }
+@@ -1304,6 +1308,16 @@ function parseVmlElement(elem, parser) {
+             case "fillcolor":
+                 result.attrs.fill = at.value;
+                 break;
++            case "coordorigin":
++            case "coordsize":
++            case "strokecolor":
++            case "strokeweight":
++            case "stroked":
++            case "filled":
++            case "type":
++            case "inset":
++                result.vml[at.localName] = at.value;
++                break;
+             case "from":
+                 const [x1, y1] = parsePoint(at.value);
+                 Object.assign(result.attrs, { x1, y1 });
+@@ -1318,9 +1332,16 @@ function parseVmlElement(elem, parser) {
+         switch (el.localName) {
+             case "stroke":
+                 Object.assign(result.attrs, parseStroke(el));
++                result.vml.strokeOn = globalXmlParser.attr(el, "on");
++                result.vml.strokeColor = globalXmlParser.attr(el, "color");
++                result.vml.strokeWeight = globalXmlParser.attr(el, "weight");
++                result.vml.dashstyle = globalXmlParser.attr(el, "dashstyle");
++                result.vml.linestyle = globalXmlParser.attr(el, "linestyle");
+                 break;
+             case "fill":
+                 Object.assign(result.attrs, parseFill());
++                result.vml.fillOn = globalXmlParser.attr(el, "on");
++                result.vml.fillColor = globalXmlParser.attr(el, "color");
+                 break;
+             case "imagedata":
+                 result.tagName = "image";
+@@ -1341,6 +1362,63 @@ function parseVmlElement(elem, parser) {
+     }
+     return result;
+ }
++// ── PDFBox (patch-package): VML em HTML — grupo, caixa de texto e imagem ──
++// O SVG/foreignObject original não sai no html2canvas (Word → PDF/Imagem) e o
++// grupo era descartado; aqui viram divs absolutas com borda (traço), fundo
++// (preenchimento) e margem interna. A posição da âncora (parágrafo/página/
++// margem) é acertada pelo app depois do layout (src/lib/docx/vml.ts).
++function vmlComoHtml(el) {
++    return !!el && el.type == DomType.VmlElement && (el.tagName == "group" || !!el.imageHref
++        || el.children.some(c => c.type == DomType.VmlElement && c.tagName == "foreignObject"));
++}
++function vmlCss(text) {
++    const out = {};
++    for (const decl of (text ?? "").split(";")) {
++        const i = decl.indexOf(":");
++        if (i > 0)
++            out[decl.slice(0, i).trim().toLowerCase()] = decl.slice(i + 1).trim();
++    }
++    return out;
++}
++const VML_PT = { pt: 1, px: 0.75, in: 72, cm: 72 / 2.54, mm: 72 / 25.4, pc: 12, emu: 1 / 12700 };
++function vmlPt(v, semUnidade) {
++    if (v == null || v === "")
++        return null;
++    const m = /^(-?\d*\.?\d+)\s*([a-z]*)$/i.exec(String(v).trim());
++    if (!m)
++        return null;
++    const n = parseFloat(m[1]);
++    if (!m[2])
++        return n * semUnidade;
++    const f = VML_PT[m[2].toLowerCase()];
++    return f == null ? null : n * f;
++}
++function vmlBool(v) {
++    if (v == null)
++        return null;
++    const s = String(v).trim().toLowerCase();
++    if (s == "t" || s == "true" || s == "on" || s == "1")
++        return true;
++    if (s == "f" || s == "false" || s == "off" || s == "0")
++        return false;
++    return null;
++}
++function vmlCor(v) {
++    if (v == null)
++        return null;
++    const c = String(v).trim().split(/\s+/)[0];
++    if (!c || /^auto$/i.test(c))
++        return null;
++    return /^(#[0-9a-f]{3,8}|[a-z]+)$/i.test(c) ? c : null;
++}
++function vmlPar(v, padrao) {
++    const p = String(v ?? padrao).split(",").map(x => parseFloat(x));
++    return [isNaN(p[0]) ? 0 : p[0], isNaN(p[1]) ? 0 : p[1]];
++}
++function vmlNum(v) {
++    const n = parseFloat(v);
++    return isNaN(n) ? 0 : n;
++}
+ function parseStroke(el) {
+     return {
+         'stroke': globalXmlParser.attr(el, "color"),
+@@ -2331,19 +2409,19 @@ class DocumentParser {
+         this.parseTableCellVerticalText(elem, cell);
+     }
+     parseTableCellVerticalText(elem, cell) {
++        // PDFBox (patch-package): "lrTb" = esquerda→direita, cima→baixo = texto
++        // NORMAL (ECMA-376 §17.18.93); a lib virava vertical e cada palavra
++        // ficava numa linha (o x2t escreve lrTb em toda célula do .doc antigo)
++        const horizontal = { writingMode: "horizontal-tb", transform: "none" };
++        const vertical = { writingMode: "vertical-rl", transform: "none" };
+         const directionMap = {
+             "btLr": {
+                 writingMode: "vertical-rl",
+                 transform: "rotate(180deg)"
+             },
+-            "lrTb": {
+-                writingMode: "vertical-lr",
+-                transform: "none"
+-            },
+-            "tbRl": {
+-                writingMode: "vertical-rl",
+-                transform: "none"
+-            }
++            "lrTb": horizontal, "lr": horizontal, "lrTbV": horizontal, "lrV": horizontal,
++            "tbRl": vertical, "tb": vertical, "tbRlV": vertical, "tbV": vertical, "rl": vertical,
++            "tbLrV": { writingMode: "vertical-lr", transform: "none" }
+         };
+         for (const c of globalXmlParser.elements(elem)) {
+             if (c.localName === "textDirection") {
+@@ -3737,8 +3815,104 @@ section.${c}>footer { z-index: 1; }
+         return result;
+     }
+     renderVmlPicture(elem) {
++        if (elem.children.some(vmlComoHtml))
++            return this.renderVmlHtml(elem);
+         return this.renderContainer(elem, "div");
+     }
++    renderVmlHtml(elem) {
++        const c = this.className;
++        const wrap = this.createElement("span", { className: `${c}-vml` });
++        for (const node of elem.children) {
++            if (node.type != DomType.VmlElement)
++                continue;
++            const css = vmlCss(node.cssStyleText);
++            const w = vmlPt(css.width, 0.75) ?? 0;
++            const h = vmlPt(css.height, 0.75) ?? 0;
++            if (css.position != "absolute") {
++                const holder = this.createElement("span", { className: `${c}-vml-inline` });
++                holder.setAttribute("style", `display:inline-block;position:relative;width:${w}pt;height:${h}pt;vertical-align:baseline`);
++                this.renderVmlNode(node, { x: 0, y: 0, w, h }, holder);
++                wrap.appendChild(holder);
++                continue;
++            }
++            const anchor = this.createElement("span", { className: `${c}-vml-anchor` });
++            anchor.setAttribute("style", "display:inline-block;position:relative;width:0;height:0;vertical-align:top");
++            const layer = this.createElement("span", { className: `${c}-vml-layer` });
++            layer.setAttribute("style", "position:absolute;left:0;top:0;width:0;height:0");
++            layer.setAttribute("data-hrel", css["mso-position-horizontal-relative"] ?? "text");
++            layer.setAttribute("data-vrel", css["mso-position-vertical-relative"] ?? "text");
++            layer.setAttribute("data-halign", css["mso-position-horizontal"] ?? "");
++            layer.setAttribute("data-valign", css["mso-position-vertical"] ?? "");
++            const x = vmlPt(css["margin-left"], 0.75) ?? vmlPt(css.left, 0.75) ?? 0;
++            const y = vmlPt(css["margin-top"], 0.75) ?? vmlPt(css.top, 0.75) ?? 0;
++            this.renderVmlNode(node, { x, y, w, h }, layer);
++            anchor.appendChild(layer);
++            wrap.appendChild(anchor);
++        }
++        return wrap;
++    }
++    renderVmlNode(node, geo, into) {
++        if (node.tagName == "group") {
++            const [ox, oy] = vmlPar(node.vml.coordorigin, "0,0");
++            const [cw, ch] = vmlPar(node.vml.coordsize, "1000,1000");
++            const sx = cw ? geo.w / cw : 1;
++            const sy = ch ? geo.h / ch : 1;
++            for (const child of node.children) {
++                if (child.type != DomType.VmlElement)
++                    continue;
++                const css = vmlCss(child.cssStyleText);
++                this.renderVmlNode(child, {
++                    x: geo.x + (vmlNum(css.left) - ox) * sx,
++                    y: geo.y + (vmlNum(css.top) - oy) * sy,
++                    w: vmlNum(css.width) * sx,
++                    h: vmlNum(css.height) * sy,
++                }, into);
++            }
++            return;
++        }
++        const c = this.className;
++        const v = node.vml ?? {};
++        const pic = !!node.imageHref || v.type == "#_x0000_t75";
++        const box = this.createElement("div", { className: `${c}-vml-box` });
++        const s = box.style;
++        s.position = "absolute";
++        s.left = `${geo.x}pt`;
++        s.top = `${geo.y}pt`;
++        s.width = `${geo.w}pt`;
++        s.height = `${geo.h}pt`;
++        s.boxSizing = "border-box";
++        const stroked = vmlBool(v.strokeOn) ?? vmlBool(v.stroked) ?? !pic;
++        if (stroked) {
++            const weight = vmlPt(v.strokeWeight ?? v.strokeweight, 1) ?? 0.75;
++            const color = vmlCor(v.strokeColor ?? v.strokecolor) ?? "#000";
++            const dash = v.dashstyle && !/^solid$/i.test(v.dashstyle)
++                ? (/dot/i.test(v.dashstyle) && !/dash/i.test(v.dashstyle) ? "dotted" : "dashed") : "solid";
++            const style = /^(thinthin|thinthick|thickthin|thickbetweenthin)$/i.test(v.linestyle ?? "") ? "double" : dash;
++            s.border = `${Math.max(weight, 0.25)}pt ${style} ${color}`;
++        }
++        const filled = vmlBool(v.fillOn) ?? vmlBool(v.filled) ?? !pic;
++        if (filled)
++            s.background = vmlCor(v.fillColor ?? node.attrs.fill) ?? "#fff";
++        if (node.imageHref?.id) {
++            const img = this.createElement("img");
++            img.setAttribute("style", "display:block;width:100%;height:100%");
++            img.setAttribute("alt", node.imageHref.title ?? "");
++            this.tasks.push(this.document?.loadDocumentImage(node.imageHref.id, this.currentPart)
++                .then(u => { if (u) img.setAttribute("src", u); }));
++            box.appendChild(img);
++        }
++        for (const child of node.children) {
++            if (child.type != DomType.VmlElement || child.tagName != "foreignObject")
++                continue;
++            const inset = String(child.vml.inset ?? "").split(",");
++            const pad = [7.2, 3.6, 7.2, 3.6].map((padrao, i) => vmlPt(inset[i], 1 / 12700) ?? padrao);
++            const text = this.createElement("div", { className: `${c}-vml-text` });
++            text.setAttribute("style", `position:absolute;left:0;top:0;right:0;bottom:0;padding:${pad[1]}pt ${pad[2]}pt ${pad[3]}pt ${pad[0]}pt;overflow:visible;box-sizing:border-box`);
++            this.renderElements(child.children, text);
++            box.appendChild(text);
++        }
++        into.appendChild(box);
++    }
+     renderVmlElement(elem) {
+         var container = this.h({ ns: ns.svg, tagName: "svg", style: elem.cssStyleText });
+         const result = this.renderVmlChildElement(elem);

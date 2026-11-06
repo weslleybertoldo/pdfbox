@@ -14,6 +14,20 @@ export const DOCX_MIME =
 export const isDocxFile = (name: string, mimeType: string): boolean =>
   mimeType === DOCX_MIME || /\.docx$/i.test(name);
 
+/** MIME do Word 97-2003 (.doc) — entra convertido pra .docx (convert/docToDocx). */
+export const DOC_MIME = "application/msword";
+
+/** O arquivo é um Word 97-2003 (.doc)? (por MIME ou extensão) */
+export const isLegacyDocFile = (name: string, mimeType: string): boolean =>
+  !isDocxFile(name, mimeType) && (mimeType === DOC_MIME || /\.doc$/i.test(name));
+
+/** Word de qualquer geração (.docx ou .doc). */
+export const isWordFile = (name: string, mimeType: string): boolean =>
+  isDocxFile(name, mimeType) || isLegacyDocFile(name, mimeType);
+
+/** accept do seletor pra Word: .docx e o .doc antigo (MIME + extensão, pro picker do Android). */
+export const WORD_ACCEPT = `${DOCX_MIME},.docx,${DOC_MIME},.doc`;
+
 /** Abre o file picker e devolve os arquivos escolhidos. */
 export function pickFiles(accept: string, multiple = false): Promise<File[]> {
   return new Promise((resolve) => {

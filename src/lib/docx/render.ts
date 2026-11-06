@@ -5,6 +5,8 @@ import { ensureDocxStyles, familiesIn, loadDocxFonts } from "./fonts";
 import { sanitizeDocxDom } from "./sanitize";
 import { paginate, type Chrome, type ChromeFor } from "./paginate";
 import { DOCX_CLASS } from "./paginateCore";
+import { placeVmlLayers } from "./vml";
+import { alignFramedParagraphs, floatFramedParagraphs } from "./frames";
 import { DEFAULT_TAB_TWIPS, expandTabMarks, layoutTabs, markTabs, readStyleTabs } from "./tabs";
 import { compatMode, shrinkJustifiedSpaces } from "./justify";
 import { applyWordLineHeights } from "./lineHeight";
@@ -89,7 +91,7 @@ export async function prepareDocx(bytes: Uint8Array): Promise<PreparedDocx> {
   const defTwips = defTab ? parseInt(defTab[1], 10) : DEFAULT_TAB_TWIPS;
   for (const [name, xml] of parts) {
     const fields = FIELD_PARTS.test(name) ? markPageFields(xml) : xml;
-    const marked = fillEmptyParagraphs(markTabs(fields, styleTabs, defTwips));
+    const marked = alignFramedParagraphs(fillEmptyParagraphs(markTabs(fields, styleTabs, defTwips)));
     if (marked !== xml) {
       zip.file(name, marked);
       changed = true;
@@ -140,6 +142,8 @@ export async function renderDocxInto(
   applyWordLineHeights(pagesEl, stylesEl);
   if (shrinkJustify) shrinkJustifiedSpaces(pagesEl); // antes das tabulações: muda onde cada uma começa
   layoutTabs(pagesEl);
+  floatFramedParagraphs(pagesEl); // nº de página em quadro à direita (Word antigo)
+  placeVmlLayers(pagesEl); // caixas/grupos VML (Word antigo): âncora → parágrafo/margem/página
 }
 
 const BR_PAGE = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
@@ -195,5 +199,7 @@ export async function renderPaginated(
     const v = await probeChrome(p, pagesEl.parentElement ?? pagesEl.ownerDocument.body);
     chromeFor = (n) => (n === 1 && p.chrome.titlePg ? v.first : p.chrome.evenOdd && n % 2 === 0 ? v.even : v.odd);
   }
-  return paginate(pagesEl, chromeFor);
+  const total = paginate(pagesEl, chromeFor);
+  placeVmlLayers(pagesEl); // a paginação pode ter levado a âncora pra outra página
+  return total;
 }
