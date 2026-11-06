@@ -1,5 +1,5 @@
 diff --git a/node_modules/docx-preview/dist/docx-preview.mjs b/node_modules/docx-preview/dist/docx-preview.mjs
-index 35fb7e7..c53ec53 100644
+index 35fb7e7..ae1572c 100644
 --- a/node_modules/docx-preview/dist/docx-preview.mjs
 +++ b/node_modules/docx-preview/dist/docx-preview.mjs
 @@ -1270,6 +1270,7 @@ class VmlElement extends OpenXmlElementBase {
@@ -157,7 +157,21 @@ index 35fb7e7..c53ec53 100644
  function parseStroke(el) {
      return {
          'stroke': globalXmlParser.attr(el, "color"),
-@@ -2331,19 +2448,19 @@ class DocumentParser {
+@@ -2238,11 +2355,13 @@ class DocumentParser {
+         switch (table.cssStyle["text-align"]) {
+             case "center":
+                 delete table.cssStyle["text-align"];
++                delete table.cssStyle["margin-inline-start"]; // PDFBox: Word ignora o recuo de tabela centralizada
+                 table.cssStyle["margin-left"] = "auto";
+                 table.cssStyle["margin-right"] = "auto";
+                 break;
+             case "right":
+                 delete table.cssStyle["text-align"];
++                delete table.cssStyle["margin-inline-start"];
+                 table.cssStyle["margin-left"] = "auto";
+                 break;
+         }
+@@ -2331,19 +2450,19 @@ class DocumentParser {
          this.parseTableCellVerticalText(elem, cell);
      }
      parseTableCellVerticalText(elem, cell) {
@@ -185,7 +199,43 @@ index 35fb7e7..c53ec53 100644
          };
          for (const c of globalXmlParser.elements(elem)) {
              if (c.localName === "textDirection") {
-@@ -2575,7 +2692,9 @@ class DocumentParser {
+@@ -2411,9 +2530,19 @@ class DocumentParser {
+                     this.parseUnderline(c, style);
+                     break;
+                 case "ind":
+-                case "tblInd":
+                     this.parseIndentation(c, style);
+                     break;
++                case "tblInd": {
++                    // PDFBox (patch-package): recuo da tabela vem em w:w + w:type (a lib lia
++                    // w:left, que não existe no tblInd, e toda tabela recuada encostava na
++                    // margem). Word 2013+: é a posição da borda; antes disso, a do texto da
++                    // 1ª célula (src/lib/docx/tables.ts tira a margem da célula nesse caso)
++                    const tipo = globalXmlParser.attr(c, "type");
++                    const w = globalXmlParser.lengthAttr(c, "w");
++                    if (w && (!tipo || tipo == "dxa"))
++                        style["margin-inline-start"] = w;
++                    break;
++                }
+                 case "rFonts":
+                     this.parseFont(c, style);
+                     break;
+@@ -2454,6 +2583,14 @@ class DocumentParser {
+                 case "spacing":
+                     if (elem.localName == "pPr")
+                         this.parseSpacing(c, style);
++                    else if (elem.localName == "rPr") {
++                        // PDFBox (patch-package): espaçamento de caractere do texto (w:val em
++                        // 1/20 pt; negativo = condensado). A lib ignorava e o texto condensado
++                        // ficava mais largo que no Word ("h40" quebrava em "h4/0" na célula)
++                        const sp = globalXmlParser.intAttr(c, "val");
++                        if (sp != null && !isNaN(sp))
++                            style["letter-spacing"] = `${(sp / 20).toFixed(2)}pt`;
++                    }
+                     break;
+                 case "wordWrap":
+                     if (globalXmlParser.boolAttr(c, "val"))
+@@ -2575,7 +2712,9 @@ class DocumentParser {
                      style["line-height"] = `${(line / 240).toFixed(2)}`;
                      break;
                  case "atLeast":
@@ -196,7 +246,7 @@ index 35fb7e7..c53ec53 100644
                      break;
                  default:
                      style["line-height"] = style["min-height"] = `${line / 20}pt`;
-@@ -2710,7 +2829,9 @@ class values {
+@@ -2710,7 +2849,9 @@ class values {
          return 'solid';
      }
      static valueOfTblLayout(c) {
@@ -207,7 +257,24 @@ index 35fb7e7..c53ec53 100644
          return type == "fixed" ? "fixed" : "auto";
      }
      static classNameOfCnfStyle(c) {
-@@ -3692,6 +3813,14 @@ section.${c}>footer { z-index: 1; }
+@@ -3384,8 +3525,14 @@ section.${c}>footer { z-index: 1; }
+                 var selector = `${style.target ?? ''}.${style.cssName}`;
+                 if (style.target != subStyle.target)
+                     selector += ` ${subStyle.target}`;
+-                if (defautStyles[style.target] == style)
+-                    selector = `.${this.className} ${style.target}, ` + selector;
++                if (defautStyles[style.target] == style) {
++                    // PDFBox (patch-package): o texto de parágrafo SEM estilo usa o run do
++                    // estilo padrão (Normal). A lib punha só ".docxv p" e o ".docxv span" do
++                    // docDefaults ganhava no <span> (fonte/corpo do docDefaults, não do Normal:
++                    // o título do formulário saía em Calibri em vez de Times)
++                    const alias = style.target == "p" && subStyle.target == "span" ? "span" : style.target;
++                    selector = `.${this.className} ${alias}, ` + selector;
++                }
+                 styleText += this.styleToString(selector, subStyle.values);
+             }
+         }
+@@ -3692,6 +3839,14 @@ section.${c}>footer { z-index: 1; }
          const children = [];
          if (elem.columns)
              children.push(this.renderTableColumns(elem.columns));
@@ -222,7 +289,7 @@ index 35fb7e7..c53ec53 100644
          children.push(...this.renderElements(elem.children));
          this.currentVerticalMerge = this.tableVerticalMerges.pop();
          this.currentCellPosition = this.tableCellPositions.pop();
-@@ -3737,8 +3866,126 @@ section.${c}>footer { z-index: 1; }
+@@ -3737,8 +3892,128 @@ section.${c}>footer { z-index: 1; }
          return result;
      }
      renderVmlPicture(elem) {
@@ -241,13 +308,15 @@ index 35fb7e7..c53ec53 100644
 +            const h = vmlPt(css.height, 0.75) ?? 0;
 +            if (css.position != "absolute") {
 +                const holder = this.createElement("span", { className: `${c}-vml-inline` });
-+                holder.setAttribute("style", `display:inline-block;position:relative;width:${w}pt;height:${h}pt;vertical-align:baseline`);
++                holder.setAttribute("style", `display:inline-block;position:relative;width:${w}pt;height:${h}pt;min-height:0;vertical-align:baseline`);
 +                this.renderVmlNode(node, { x: 0, y: 0, w, h }, holder);
 +                wrap.appendChild(holder);
 +                continue;
 +            }
 +            const anchor = this.createElement("span", { className: `${c}-vml-anchor` });
-+            anchor.setAttribute("style", "display:inline-block;position:relative;width:0;height:0;vertical-align:top");
++            // min-height:0: o estilo do run (".docxv span { min-height: <corpo> }") esticava
++            // a âncora (14,7 px cada, o corpo do formulário descia ~30 px) e a imagem pequena
++            anchor.setAttribute("style", "display:inline-block;position:relative;width:0;height:0;min-height:0;vertical-align:top");
 +            const layer = this.createElement("span", { className: `${c}-vml-layer` });
 +            const z = parseInt(css["z-index"] ?? "0", 10);
 +            layer.setAttribute("style", `position:absolute;left:0;top:0;width:0;height:0${z < 0 ? ";z-index:-1" : ""}`);

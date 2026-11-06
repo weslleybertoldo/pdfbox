@@ -11,6 +11,7 @@ import { DEFAULT_TAB_TWIPS, expandTabMarks, layoutTabs, markTabs, readStyleTabs 
 import { compatMode, shrinkJustifiedSpaces } from "./justify";
 import { applyWordLineHeights } from "./lineHeight";
 import { fillEmptyParagraphs } from "./emptyParagraphs";
+import { addRowBorders, hangOldTables } from "./tables";
 
 export { DOCX_CLASS };
 
@@ -46,6 +47,8 @@ export interface PreparedDocx {
   chrome: { titlePg: boolean; evenOdd: boolean; singleSection: boolean };
   /** Word 2013+ (compatibilityMode ≥ 15): justificado encolhe os espaços (justify.ts) */
   shrinkJustify: boolean;
+  /** Word 2010 e anteriores (modo < 15 ou sem modo): tabela pendura na margem da célula (tables.ts) */
+  oldTableIndent?: boolean;
 }
 
 const FIELD_PARTS = /^word\/(document|header\d*|footer\d*)\.xml$/;
@@ -113,6 +116,7 @@ export async function prepareDocx(bytes: Uint8Array): Promise<PreparedDocx> {
       singleSection: (documentXml.match(/<w:sectPr[\s>]/g) ?? []).length <= 1,
     },
     shrinkJustify: compatMode(settingsXml) >= 15,
+    oldTableIndent: compatMode(settingsXml) < 15,
   };
 }
 
@@ -127,6 +131,7 @@ export async function renderDocxInto(
   pagesEl: HTMLElement,
   stylesEl: HTMLElement,
   shrinkJustify = false,
+  oldTableIndent = false,
 ): Promise<void> {
   const doc = pagesEl.ownerDocument;
   ensureDocxStyles(doc);
@@ -137,6 +142,8 @@ export async function renderDocxInto(
   for (const n of nodes) (n.nodeName === "STYLE" ? stylesEl : pagesEl).appendChild(n);
   sanitizeDocxDom(stylesEl);
   sanitizeDocxDom(pagesEl);
+  if (oldTableIndent) hangOldTables(pagesEl); // antes de medir: muda a largura útil das células
+  addRowBorders(pagesEl); // altura da linha de tabela do Word = entre as bordas
   expandTabMarks(pagesEl);
   await doc.fonts?.ready;
   applyWordLineHeights(pagesEl, stylesEl);
@@ -171,7 +178,7 @@ async function probeChrome(
   const stylesEl = doc.createElement("div");
   host.append(stylesEl, pagesEl);
   try {
-    await renderDocxInto(blob, p.families, pagesEl, stylesEl, p.shrinkJustify);
+    await renderDocxInto(blob, p.families, pagesEl, stylesEl, p.shrinkJustify, p.oldTableIndent);
     const pages = Array.from(pagesEl.querySelectorAll<HTMLElement>(`section.${DOCX_CLASS}`));
     const pick = (s: HTMLElement | undefined): Chrome => ({
       header: (s?.querySelector(":scope > header")?.cloneNode(true) as Element | undefined) ?? null,
@@ -193,7 +200,7 @@ export async function renderPaginated(
   pagesEl: HTMLElement,
   stylesEl: HTMLElement,
 ): Promise<number> {
-  await renderDocxInto(p.blob, p.families, pagesEl, stylesEl, p.shrinkJustify);
+  await renderDocxInto(p.blob, p.families, pagesEl, stylesEl, p.shrinkJustify, p.oldTableIndent);
   let chromeFor: ChromeFor | undefined;
   if (p.chrome.singleSection && (p.chrome.titlePg || p.chrome.evenOdd)) {
     const v = await probeChrome(p, pagesEl.parentElement ?? pagesEl.ownerDocument.body);

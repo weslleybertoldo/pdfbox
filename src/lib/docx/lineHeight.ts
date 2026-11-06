@@ -43,10 +43,27 @@ export function applyWordLineHeights(pagesEl: HTMLElement, stylesEl: HTMLElement
   probe.textContent = "Hg";
   doc.body.appendChild(probe);
   const ratioOf = new Map<string, number>();
-  const writes: [HTMLElement, string, string | null, string, HTMLElement[]][] = [];
+  const writes: [HTMLElement, string, string | null, string, HTMLElement[], boolean][] = [];
+  // o que está numa caixa VML ancorada DENTRO do parágrafo não é dele (a caixa é
+  // camada à parte): o texto da caixa fazia o parágrafo do brasão parecer texto e
+  // a linha ganhava a "descida" da letra (+3 pt no formulário preenchido)
+  const anchor = `.${DOCX_CLASS}-vml-anchor`;
+  const doParagrafo = (p: HTMLElement, el: Element) => {
+    const a = el.closest(anchor);
+    return !a || !p.contains(a);
+  };
+  const textoFora = (p: HTMLElement, el: HTMLElement): string => {
+    let t = "";
+    const w = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      if (n.parentElement && doParagrafo(p, n.parentElement)) t += n.textContent ?? "";
+    }
+    return t;
+  };
   for (const p of Array.from(pagesEl.querySelectorAll<HTMLElement>("p"))) {
-    const spans = Array.from(p.querySelectorAll<HTMLElement>("span"));
-    const text = spans.find((s) => s.textContent?.trim());
+    const spans = Array.from(p.querySelectorAll<HTMLElement>("span")).filter((s) => doParagrafo(p, s));
+    const comCaixa = !!p.querySelector(anchor);
+    const text = spans.find((s) => (comCaixa ? textoFora(p, s) : s.textContent)?.trim());
     const run = text ?? spans[0] ?? p;
     const cs = win.getComputedStyle(run);
     let r = ratioOf.get(cs.fontFamily);
@@ -62,12 +79,19 @@ export function applyWordLineHeights(pagesEl: HTMLElement, stylesEl: HTMLElement
       : [
           ...Array.from(p.querySelectorAll("img")).map((img) => img.parentElement),
           ...Array.from(p.querySelectorAll<HTMLElement>(`.${DOCX_CLASS}-vml-inline`)),
-        ].filter((b): b is HTMLElement => !!b && win.getComputedStyle(b).display === "inline-block");
-    writes.push([p, r.toFixed(4), run === p ? null : cs.fontSize, cs.fontFamily, pics]);
+        ].filter(
+          (b): b is HTMLElement => !!b && doParagrafo(p, b) && win.getComputedStyle(b).display === "inline-block",
+        );
+    writes.push([p, r.toFixed(4), run === p ? null : cs.fontSize, cs.fontFamily, pics, win.getComputedStyle(p).lineHeight === "normal"]);
   }
   probe.remove();
-  for (const [p, r, size, family, pics] of writes) {
+  for (const [p, r, size, family, pics, normal] of writes) {
     p.style.setProperty(VAR, r);
+    // entrelinha "simples" (o arquivo não diz nada): a altura natural da fonte medida
+    // na sonda. O "normal" do navegador arredonda a subida e a descida da letra pra
+    // pixel inteiro: linha vazia de 7 pt ficava com 7,5 pt (Word: 8 pt) e o corpo do
+    // formulário preenchido subia ~3 pt até a linha "Tipo da viagem"
+    if (normal) p.style.lineHeight = `var(${VAR})`;
     if (size) {
       p.style.fontSize = size;
       p.style.fontFamily = family;
