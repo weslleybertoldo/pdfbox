@@ -14,6 +14,7 @@
  * "descida" da letra embaixo — logo do cabeçalho do ofício: 125,35 pt no app ×
  * 121,65 pt (a imagem) no LibreOffice.
  */
+import { DOCX_CLASS } from "./paginateCore";
 const VAR = "--docxv-lh";
 const UNITLESS_CSS = /line-height:\s*(\d*\.?\d+)\s*(?=[;}\r\n])/g;
 const UNITLESS = /^\d*\.?\d+$/;
@@ -55,11 +56,13 @@ export function applyWordLineHeights(pagesEl: HTMLElement, stylesEl: HTMLElement
       ratioOf.set(cs.fontFamily, r);
     }
     // caixa inline-block de cada imagem de um parágrafo sem texto (a docx-preview embrulha o <img>)
+    // (e a caixa da imagem VML do Word antigo — patch do docx-preview, src/lib/docx/vml.ts)
     const pics = text
       ? []
-      : Array.from(p.querySelectorAll("img"))
-          .map((img) => img.parentElement)
-          .filter((b): b is HTMLElement => !!b && win.getComputedStyle(b).display === "inline-block");
+      : [
+          ...Array.from(p.querySelectorAll("img")).map((img) => img.parentElement),
+          ...Array.from(p.querySelectorAll<HTMLElement>(`.${DOCX_CLASS}-vml-inline`)),
+        ].filter((b): b is HTMLElement => !!b && win.getComputedStyle(b).display === "inline-block");
     writes.push([p, r.toFixed(4), run === p ? null : cs.fontSize, cs.fontFamily, pics]);
   }
   probe.remove();

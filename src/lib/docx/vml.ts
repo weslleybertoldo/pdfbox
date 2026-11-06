@@ -100,9 +100,25 @@ export function placeVmlLayers(root: ParentNode): number {
     const pageCss = view?.getComputedStyle(page);
     if (pageCss) isolar(layer, pageCss);
     if (pageCss?.position === "static") page.style.position = "relative";
+    // "atrás do texto" (z-index -1) pinta acima do fundo da página, não por baixo dela
+    page.style.isolation = "isolate";
+    // âncora sai de DENTRO do parágrafo e vira irmã dele, logo antes: o CSS de
+    // estilo de parágrafo da lib (".docxv_titulo1 span { font-style: italic }")
+    // pegava o texto da caixa (no .docx do formulário preenchido, o título
+    // "SOLICITAÇÃO DE PASSAGEM" saía em itálico). Bloco de altura 0: não ocupa
+    // linha nem mexe na paginação, e acompanha o parágrafo se ele mudar de página.
+    const dentro = anchor.closest<HTMLElement>("p");
+    if (dentro) {
+      dentro.parentElement?.insertBefore(anchor, dentro);
+      anchor.style.display = "block";
+      anchor.dataset.paragrafo = "1";
+    }
     const a = offsetIn(anchor, page);
     if (!a) continue;
-    const para = anchor.closest<HTMLElement>("p") ?? anchor.parentElement ?? anchor;
+    const para =
+      (anchor.dataset.paragrafo ? (anchor.nextElementSibling as HTMLElement | null) : null) ??
+      anchor.parentElement ??
+      anchor;
     const p = offsetIn(para, page) ?? a;
     const pad = { padLeft: px(pageCss?.paddingLeft ?? ""), padTop: px(pageCss?.paddingTop ?? "") };
     let left = horizontalOrigin(layer.dataset.hrel ?? "text", pad, a.x);

@@ -1,5 +1,5 @@
 diff --git a/node_modules/docx-preview/dist/docx-preview.mjs b/node_modules/docx-preview/dist/docx-preview.mjs
-index 35fb7e7..d486bd2 100644
+index 35fb7e7..c53ec53 100644
 --- a/node_modules/docx-preview/dist/docx-preview.mjs
 +++ b/node_modules/docx-preview/dist/docx-preview.mjs
 @@ -1270,6 +1270,7 @@ class VmlElement extends OpenXmlElementBase {
@@ -20,7 +20,7 @@ index 35fb7e7..d486bd2 100644
          default:
              return null;
      }
-@@ -1304,6 +1308,16 @@ function parseVmlElement(elem, parser) {
+@@ -1304,6 +1308,17 @@ function parseVmlElement(elem, parser) {
              case "fillcolor":
                  result.attrs.fill = at.value;
                  break;
@@ -32,12 +32,13 @@ index 35fb7e7..d486bd2 100644
 +            case "filled":
 +            case "type":
 +            case "inset":
++            case "path":
 +                result.vml[at.localName] = at.value;
 +                break;
              case "from":
                  const [x1, y1] = parsePoint(at.value);
                  Object.assign(result.attrs, { x1, y1 });
-@@ -1318,9 +1332,16 @@ function parseVmlElement(elem, parser) {
+@@ -1318,9 +1333,16 @@ function parseVmlElement(elem, parser) {
          switch (el.localName) {
              case "stroke":
                  Object.assign(result.attrs, parseStroke(el));
@@ -54,7 +55,7 @@ index 35fb7e7..d486bd2 100644
                  break;
              case "imagedata":
                  result.tagName = "image";
-@@ -1341,6 +1362,63 @@ function parseVmlElement(elem, parser) {
+@@ -1341,6 +1363,101 @@ function parseVmlElement(elem, parser) {
      }
      return result;
  }
@@ -115,10 +116,48 @@ index 35fb7e7..d486bd2 100644
 +    const n = parseFloat(v);
 +    return isNaN(n) ? 0 : n;
 +}
++// caminho VML (m/l/c/t/r/v/x/e; número omitido = 0) -> "d" do SVG; null se tiver
++// comando que não dá pra converter sem as fórmulas da forma (@n, arcos...)
++const VML_CMD = { m: ["M", 2], l: ["L", 2], c: ["C", 6], t: ["m", 2], r: ["l", 2], v: ["c", 6] };
++function vmlPathToSvg(path) {
++    const out = [];
++    // comandos de 1 ou 2 letras grudados ("xe" = fecha + fim, "nf" = sem preenchimento)
++    const re = /(nf|ns|ae|al|at|ar|wa|wr|qx|qy|qb|h[a-i]|[a-z])([^a-z]*)/gi;
++    let m;
++    while ((m = re.exec(path)) != null) {
++        const cmd = m[1].toLowerCase();
++        const args = m[2];
++        if (/@/.test(args))
++            return null;
++        const nums = args.trim() === "" ? [] : args.split(",").flatMap(s => {
++            const p = s.trim();
++            return p === "" ? [0] : p.split(/\s+/).map(Number);
++        });
++        if (nums.some(n => isNaN(n)))
++            return null;
++        if (cmd == "x") {
++            out.push("Z");
++            continue;
++        }
++        if (cmd == "e" || cmd == "nf" || cmd == "ns")
++            continue;
++        const def = VML_CMD[cmd];
++        if (!def)
++            return null;
++        const [svg, n] = def;
++        if (nums.length == 0 && (cmd == "m" || cmd == "t")) {
++            out.push(svg + "0 0");
++            continue;
++        }
++        for (let i = 0; i + n <= nums.length; i += n)
++            out.push(svg + nums.slice(i, i + n).join(" "));
++    }
++    return out.length ? out.join(" ") : null;
++}
  function parseStroke(el) {
      return {
          'stroke': globalXmlParser.attr(el, "color"),
-@@ -2331,19 +2409,19 @@ class DocumentParser {
+@@ -2331,19 +2448,19 @@ class DocumentParser {
          this.parseTableCellVerticalText(elem, cell);
      }
      parseTableCellVerticalText(elem, cell) {
@@ -146,7 +185,44 @@ index 35fb7e7..d486bd2 100644
          };
          for (const c of globalXmlParser.elements(elem)) {
              if (c.localName === "textDirection") {
-@@ -3737,8 +3815,104 @@ section.${c}>footer { z-index: 1; }
+@@ -2575,7 +2692,9 @@ class DocumentParser {
+                     style["line-height"] = `${(line / 240).toFixed(2)}`;
+                     break;
+                 case "atLeast":
+-                    style["line-height"] = `calc(100% + ${line / 20}pt)`;
++                    // PDFBox (patch-package): "pelo menos X" = a MAIOR entre a linha
++                    // natural e X (a lib somava X à linha e a altura quase dobrava)
++                    style["line-height"] = `max(calc(var(--${this.options.className}-lh, 1.15) * 1em), ${line / 20}pt)`;
+                     break;
+                 default:
+                     style["line-height"] = style["min-height"] = `${line / 20}pt`;
+@@ -2710,7 +2829,9 @@ class values {
+         return 'solid';
+     }
+     static valueOfTblLayout(c) {
+-        var type = globalXmlParser.attr(c, "val");
++        // PDFBox (patch-package): o atributo é w:type (ECMA-376 §17.4.53); a lib
++        // lia "val" e toda tabela de layout fixo virava automática
++        var type = globalXmlParser.attr(c, "type") ?? globalXmlParser.attr(c, "val");
+         return type == "fixed" ? "fixed" : "auto";
+     }
+     static classNameOfCnfStyle(c) {
+@@ -3692,6 +3813,14 @@ section.${c}>footer { z-index: 1; }
+         const children = [];
+         if (elem.columns)
+             children.push(this.renderTableColumns(elem.columns));
++        // PDFBox: layout fixo com largura "auto" = largura da grade (com width auto o
++        // CSS ignora o table-layout: fixed e estreita colunas, quebrando linha a mais)
++        const css = elem.cssStyle;
++        if (css && css["table-layout"] == "fixed" && elem.columns?.length && (!css.width || css.width == "auto")) {
++            const soma = elem.columns.reduce((s, c) => s + (parseFloat(c.width) || 0), 0);
++            if (soma > 0)
++                css.width = `${soma.toFixed(2)}pt`;
++        }
+         children.push(...this.renderElements(elem.children));
+         this.currentVerticalMerge = this.tableVerticalMerges.pop();
+         this.currentCellPosition = this.tableCellPositions.pop();
+@@ -3737,8 +3866,126 @@ section.${c}>footer { z-index: 1; }
          return result;
      }
      renderVmlPicture(elem) {
@@ -173,7 +249,8 @@ index 35fb7e7..d486bd2 100644
 +            const anchor = this.createElement("span", { className: `${c}-vml-anchor` });
 +            anchor.setAttribute("style", "display:inline-block;position:relative;width:0;height:0;vertical-align:top");
 +            const layer = this.createElement("span", { className: `${c}-vml-layer` });
-+            layer.setAttribute("style", "position:absolute;left:0;top:0;width:0;height:0");
++            const z = parseInt(css["z-index"] ?? "0", 10);
++            layer.setAttribute("style", `position:absolute;left:0;top:0;width:0;height:0${z < 0 ? ";z-index:-1" : ""}`);
 +            layer.setAttribute("data-hrel", css["mso-position-horizontal-relative"] ?? "text");
 +            layer.setAttribute("data-vrel", css["mso-position-vertical-relative"] ?? "text");
 +            layer.setAttribute("data-halign", css["mso-position-horizontal"] ?? "");
@@ -217,7 +294,29 @@ index 35fb7e7..d486bd2 100644
 +        s.height = `${geo.h}pt`;
 +        s.boxSizing = "border-box";
 +        const stroked = vmlBool(v.strokeOn) ?? vmlBool(v.stroked) ?? !pic;
-+        if (stroked) {
++        const filled = vmlBool(v.fillOn) ?? vmlBool(v.filled) ?? !pic;
++        const d = !pic && v.path ? vmlPathToSvg(v.path) : null;
++        if (d) {
++            const [ox, oy] = vmlPar(v.coordorigin, "0,0");
++            const [cw, ch] = vmlPar(v.coordsize, "1000,1000");
++            const svg = this.createSvgElement("svg");
++            svg.setAttribute("viewBox", `${ox} ${oy} ${cw || 1} ${ch || 1}`);
++            svg.setAttribute("preserveAspectRatio", "none");
++            svg.setAttribute("style", "position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible");
++            const caminho = this.createSvgElement("path");
++            caminho.setAttribute("d", d);
++            caminho.setAttribute("fill", filled ? (vmlCor(v.fillColor ?? node.attrs.fill) ?? "#fff") : "none");
++            if (stroked) {
++                caminho.setAttribute("stroke", vmlCor(v.strokeColor ?? v.strokecolor) ?? "#000");
++                caminho.setAttribute("stroke-width", `${Math.max(vmlPt(v.strokeWeight ?? v.strokeweight, 1) ?? 0.75, 0.25) * 4 / 3}`);
++                caminho.setAttribute("vector-effect", "non-scaling-stroke");
++            }
++            else
++                caminho.setAttribute("stroke", "none");
++            svg.appendChild(caminho);
++            box.appendChild(svg);
++        }
++        if (stroked && !d) {
 +            const weight = vmlPt(v.strokeWeight ?? v.strokeweight, 1) ?? 0.75;
 +            const color = vmlCor(v.strokeColor ?? v.strokecolor) ?? "#000";
 +            const dash = v.dashstyle && !/^solid$/i.test(v.dashstyle)
@@ -225,8 +324,7 @@ index 35fb7e7..d486bd2 100644
 +            const style = /^(thinthin|thinthick|thickthin|thickbetweenthin)$/i.test(v.linestyle ?? "") ? "double" : dash;
 +            s.border = `${Math.max(weight, 0.25)}pt ${style} ${color}`;
 +        }
-+        const filled = vmlBool(v.fillOn) ?? vmlBool(v.filled) ?? !pic;
-+        if (filled)
++        if (filled && !d)
 +            s.background = vmlCor(v.fillColor ?? node.attrs.fill) ?? "#fff";
 +        if (node.imageHref?.id) {
 +            const img = this.createElement("img");
