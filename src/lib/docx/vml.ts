@@ -87,6 +87,7 @@ function isolar(el: HTMLElement, pageCss: CSSStyleDeclaration): void {
 /** Move cada camada VML pra origem que o Word usa (ver o cabeçalho do arquivo). */
 export function placeVmlLayers(root: ParentNode): number {
   let n = 0;
+  const reservas = new Map<HTMLElement, number>(); // parágrafo → espaço (px) da figura "acima e abaixo"
   for (const holder of Array.from(root.querySelectorAll<HTMLElement>(`.${DOCX_CLASS}-vml-inline`))) {
     const page = holder.closest<HTMLElement>(`section.${DOCX_CLASS}`);
     const css = page?.ownerDocument.defaultView?.getComputedStyle(page);
@@ -137,7 +138,20 @@ export function placeVmlLayers(root: ParentNode): number {
     }
     layer.style.left = `${left - a.x}px`;
     layer.style.top = `${top - a.y}px`;
+    const presaNoTexto = !/^(page|margin|top-margin-area|bottom-margin-area)$/.test(layer.dataset.vrel ?? "text");
+    if (box && layer.dataset.wrap === "topAndBottom" && presaNoTexto && para !== anchor) {
+      // "acima e abaixo do texto": o texto do parágrafo não fica do lado da figura,
+      // desce pra baixo dela (a lib desenhava a figura por cima do texto)
+      const fundo = top + box.offsetTop + box.offsetHeight - p.y + px(layer.dataset.wrapb ?? "") * (4 / 3);
+      reservas.set(para, Math.max(reservas.get(para) ?? 0, fundo));
+    }
     n++;
+  }
+  // depois de posicionar tudo (idempotente: parte sempre do padding original)
+  for (const [para, fundo] of reservas) {
+    if (para.dataset.vmlPadOrig === undefined) para.dataset.vmlPadOrig = para.style.paddingTop;
+    const orig = para.dataset.vmlPadOrig || "0px";
+    para.style.paddingTop = fundo > 0 ? `calc(${orig} + ${fundo.toFixed(2)}px)` : orig;
   }
   return n;
 }

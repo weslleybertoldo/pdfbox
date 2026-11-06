@@ -1,5 +1,5 @@
 diff --git a/node_modules/docx-preview/dist/docx-preview.mjs b/node_modules/docx-preview/dist/docx-preview.mjs
-index 35fb7e7..ae1572c 100644
+index 35fb7e7..ed79406 100644
 --- a/node_modules/docx-preview/dist/docx-preview.mjs
 +++ b/node_modules/docx-preview/dist/docx-preview.mjs
 @@ -1270,6 +1270,7 @@ class VmlElement extends OpenXmlElementBase {
@@ -55,7 +55,18 @@ index 35fb7e7..ae1572c 100644
                  break;
              case "imagedata":
                  result.tagName = "image";
-@@ -1341,6 +1363,101 @@ function parseVmlElement(elem, parser) {
+@@ -1333,6 +1355,10 @@ function parseVmlElement(elem, parser) {
+             case "txbxContent":
+                 result.children.push(...parser.parseBodyElements(el));
+                 break;
++            case "wrap":
++                // PDFBox (patch-package): como o texto contorna a figura (topAndBottom = só acima e abaixo)
++                result.vml.wrap = globalXmlParser.attr(el, "type");
++                break;
+             default:
+                 const child = parseVmlElement(el, parser);
+                 child && result.children.push(child);
+@@ -1341,6 +1367,104 @@ function parseVmlElement(elem, parser) {
      }
      return result;
  }
@@ -66,7 +77,10 @@ index 35fb7e7..ae1572c 100644
 +// margem) é acertada pelo app depois do layout (src/lib/docx/vml.ts).
 +function vmlComoHtml(el) {
 +    return !!el && el.type == DomType.VmlElement && (el.tagName == "group" || !!el.imageHref
-+        || el.children.some(c => c.type == DomType.VmlElement && c.tagName == "foreignObject"));
++        || el.children.some(c => c.type == DomType.VmlElement && c.tagName == "foreignObject")
++        // forma solta com posição absoluta (retângulo/elipse/forma livre): o SVG da lib
++        // saía sem tamanho e sumia no PDF
++        || (el.tagName != "line" && /position:\s*absolute/i.test(el.cssStyleText ?? "")));
 +}
 +function vmlCss(text) {
 +    const out = {};
@@ -157,7 +171,7 @@ index 35fb7e7..ae1572c 100644
  function parseStroke(el) {
      return {
          'stroke': globalXmlParser.attr(el, "color"),
-@@ -2238,11 +2355,13 @@ class DocumentParser {
+@@ -2238,11 +2362,13 @@ class DocumentParser {
          switch (table.cssStyle["text-align"]) {
              case "center":
                  delete table.cssStyle["text-align"];
@@ -171,7 +185,7 @@ index 35fb7e7..ae1572c 100644
                  table.cssStyle["margin-left"] = "auto";
                  break;
          }
-@@ -2331,19 +2450,19 @@ class DocumentParser {
+@@ -2331,19 +2457,19 @@ class DocumentParser {
          this.parseTableCellVerticalText(elem, cell);
      }
      parseTableCellVerticalText(elem, cell) {
@@ -199,7 +213,7 @@ index 35fb7e7..ae1572c 100644
          };
          for (const c of globalXmlParser.elements(elem)) {
              if (c.localName === "textDirection") {
-@@ -2411,9 +2530,19 @@ class DocumentParser {
+@@ -2411,9 +2537,19 @@ class DocumentParser {
                      this.parseUnderline(c, style);
                      break;
                  case "ind":
@@ -220,7 +234,7 @@ index 35fb7e7..ae1572c 100644
                  case "rFonts":
                      this.parseFont(c, style);
                      break;
-@@ -2454,6 +2583,14 @@ class DocumentParser {
+@@ -2454,6 +2590,14 @@ class DocumentParser {
                  case "spacing":
                      if (elem.localName == "pPr")
                          this.parseSpacing(c, style);
@@ -235,7 +249,7 @@ index 35fb7e7..ae1572c 100644
                      break;
                  case "wordWrap":
                      if (globalXmlParser.boolAttr(c, "val"))
-@@ -2575,7 +2712,9 @@ class DocumentParser {
+@@ -2575,7 +2719,9 @@ class DocumentParser {
                      style["line-height"] = `${(line / 240).toFixed(2)}`;
                      break;
                  case "atLeast":
@@ -246,7 +260,7 @@ index 35fb7e7..ae1572c 100644
                      break;
                  default:
                      style["line-height"] = style["min-height"] = `${line / 20}pt`;
-@@ -2710,7 +2849,9 @@ class values {
+@@ -2710,7 +2856,9 @@ class values {
          return 'solid';
      }
      static valueOfTblLayout(c) {
@@ -257,7 +271,7 @@ index 35fb7e7..ae1572c 100644
          return type == "fixed" ? "fixed" : "auto";
      }
      static classNameOfCnfStyle(c) {
-@@ -3384,8 +3525,14 @@ section.${c}>footer { z-index: 1; }
+@@ -3384,8 +3532,14 @@ section.${c}>footer { z-index: 1; }
                  var selector = `${style.target ?? ''}.${style.cssName}`;
                  if (style.target != subStyle.target)
                      selector += ` ${subStyle.target}`;
@@ -274,7 +288,7 @@ index 35fb7e7..ae1572c 100644
                  styleText += this.styleToString(selector, subStyle.values);
              }
          }
-@@ -3692,6 +3839,14 @@ section.${c}>footer { z-index: 1; }
+@@ -3692,6 +3846,14 @@ section.${c}>footer { z-index: 1; }
          const children = [];
          if (elem.columns)
              children.push(this.renderTableColumns(elem.columns));
@@ -289,7 +303,7 @@ index 35fb7e7..ae1572c 100644
          children.push(...this.renderElements(elem.children));
          this.currentVerticalMerge = this.tableVerticalMerges.pop();
          this.currentCellPosition = this.tableCellPositions.pop();
-@@ -3737,8 +3892,128 @@ section.${c}>footer { z-index: 1; }
+@@ -3737,8 +3899,135 @@ section.${c}>footer { z-index: 1; }
          return result;
      }
      renderVmlPicture(elem) {
@@ -324,6 +338,11 @@ index 35fb7e7..ae1572c 100644
 +            layer.setAttribute("data-vrel", css["mso-position-vertical-relative"] ?? "text");
 +            layer.setAttribute("data-halign", css["mso-position-horizontal"] ?? "");
 +            layer.setAttribute("data-valign", css["mso-position-vertical"] ?? "");
++            if (node.vml?.wrap)
++                layer.setAttribute("data-wrap", node.vml.wrap);
++            const distB = vmlPt(css["mso-wrap-distance-bottom"], 0.75);
++            if (distB)
++                layer.setAttribute("data-wrapb", `${distB}`);
 +            const x = vmlPt(css["margin-left"], 0.75) ?? vmlPt(css.left, 0.75) ?? 0;
 +            const y = vmlPt(css["margin-top"], 0.75) ?? vmlPt(css.top, 0.75) ?? 0;
 +            this.renderVmlNode(node, { x, y, w, h }, layer);
@@ -362,6 +381,8 @@ index 35fb7e7..ae1572c 100644
 +        s.width = `${geo.w}pt`;
 +        s.height = `${geo.h}pt`;
 +        s.boxSizing = "border-box";
++        if (node.tagName == "ellipse")
++            s.borderRadius = "50%"; // PDFBox: v:oval (a lib desenhava retângulo)
 +        const stroked = vmlBool(v.strokeOn) ?? vmlBool(v.stroked) ?? !pic;
 +        const filled = vmlBool(v.fillOn) ?? vmlBool(v.filled) ?? !pic;
 +        const d = !pic && v.path ? vmlPathToSvg(v.path) : null;
