@@ -2,6 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * html2canvas (Word/HTML/Excel → PDF/Imagem) mede a linha de base das letras com
+ * um <img> de 1 px num <div> escondido que ele põe no body do documento PRINCIPAL.
+ * O preflight do Tailwind deixa todo <img> como bloco: a imagem caía na linha de
+ * baixo, a medida saía maior e TODO texto era pintado uns pixels abaixo do lugar
+ * (no formulário do .doc o texto das células encostava na borda de baixo).
+ */
+body > div[style*="visibility: hidden"][style*="white-space: nowrap"] > img {
+  display: inline;
+}
+
 html, body, #root { height: 100%; }
 body { @apply bg-slate-950 text-slate-100 antialiased; }
 

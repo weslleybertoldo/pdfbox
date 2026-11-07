@@ -1,9 +1,11 @@
 {
   "name": "pdfbox",
   "private": true,
-  "version": "1.8.2",
+  "version": "1.9.0",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
+    "postinstall": "patch-package",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
@@ -53,6 +55,7 @@
     "@xmldom/xmldom": "0.9.10",
     "autoprefixer": "^10.5.4",
     "oxlint": "^1.75.0",
+    "patch-package": "^8.0.0",
     "postcss": "^8.5.25",
     "tailwindcss": "^3.4.19",
     "typescript": "~6.0.2",

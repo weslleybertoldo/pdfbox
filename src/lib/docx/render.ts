@@ -5,10 +5,13 @@ import { ensureDocxStyles, familiesIn, loadDocxFonts } from "./fonts";
 import { sanitizeDocxDom } from "./sanitize";
 import { paginate, type Chrome, type ChromeFor } from "./paginate";
 import { DOCX_CLASS } from "./paginateCore";
+import { placeVmlLayers } from "./vml";
+import { alignFramedParagraphs, floatFramedParagraphs } from "./frames";
 import { DEFAULT_TAB_TWIPS, expandTabMarks, layoutTabs, markTabs, readStyleTabs } from "./tabs";
 import { compatMode, shrinkJustifiedSpaces } from "./justify";
 import { applyWordLineHeights } from "./lineHeight";
 import { fillEmptyParagraphs } from "./emptyParagraphs";
+import { addRowBorders, hangOldTables } from "./tables";
 
 export { DOCX_CLASS };
 
@@ -44,6 +47,8 @@ export interface PreparedDocx {
   chrome: { titlePg: boolean; evenOdd: boolean; singleSection: boolean };
   /** Word 2013+ (compatibilityMode ≥ 15): justificado encolhe os espaços (justify.ts) */
   shrinkJustify: boolean;
+  /** Word 2010 e anteriores (modo < 15 ou sem modo): tabela pendura na margem da célula (tables.ts) */
+  oldTableIndent?: boolean;
 }
 
 const FIELD_PARTS = /^word\/(document|header\d*|footer\d*)\.xml$/;
@@ -89,7 +94,7 @@ export async function prepareDocx(bytes: Uint8Array): Promise<PreparedDocx> {
   const defTwips = defTab ? parseInt(defTab[1], 10) : DEFAULT_TAB_TWIPS;
   for (const [name, xml] of parts) {
     const fields = FIELD_PARTS.test(name) ? markPageFields(xml) : xml;
-    const marked = fillEmptyParagraphs(markTabs(fields, styleTabs, defTwips));
+    const marked = alignFramedParagraphs(fillEmptyParagraphs(markTabs(fields, styleTabs, defTwips)));
     if (marked !== xml) {
       zip.file(name, marked);
       changed = true;
@@ -111,6 +116,7 @@ export async function prepareDocx(bytes: Uint8Array): Promise<PreparedDocx> {
       singleSection: (documentXml.match(/<w:sectPr[\s>]/g) ?? []).length <= 1,
     },
     shrinkJustify: compatMode(settingsXml) >= 15,
+    oldTableIndent: compatMode(settingsXml) < 15,
   };
 }
 
@@ -125,6 +131,7 @@ export async function renderDocxInto(
   pagesEl: HTMLElement,
   stylesEl: HTMLElement,
   shrinkJustify = false,
+  oldTableIndent = false,
 ): Promise<void> {
   const doc = pagesEl.ownerDocument;
   ensureDocxStyles(doc);
@@ -135,11 +142,15 @@ export async function renderDocxInto(
   for (const n of nodes) (n.nodeName === "STYLE" ? stylesEl : pagesEl).appendChild(n);
   sanitizeDocxDom(stylesEl);
   sanitizeDocxDom(pagesEl);
+  if (oldTableIndent) hangOldTables(pagesEl); // antes de medir: muda a largura útil das células
+  addRowBorders(pagesEl); // altura da linha de tabela do Word = entre as bordas
   expandTabMarks(pagesEl);
   await doc.fonts?.ready;
   applyWordLineHeights(pagesEl, stylesEl);
   if (shrinkJustify) shrinkJustifiedSpaces(pagesEl); // antes das tabulações: muda onde cada uma começa
   layoutTabs(pagesEl);
+  floatFramedParagraphs(pagesEl); // nº de página em quadro à direita (Word antigo)
+  placeVmlLayers(pagesEl); // caixas/grupos VML (Word antigo): âncora → parágrafo/margem/página
 }
 
 const BR_PAGE = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
@@ -167,7 +178,7 @@ async function probeChrome(
   const stylesEl = doc.createElement("div");
   host.append(stylesEl, pagesEl);
   try {
-    await renderDocxInto(blob, p.families, pagesEl, stylesEl, p.shrinkJustify);
+    await renderDocxInto(blob, p.families, pagesEl, stylesEl, p.shrinkJustify, p.oldTableIndent);
     const pages = Array.from(pagesEl.querySelectorAll<HTMLElement>(`section.${DOCX_CLASS}`));
     const pick = (s: HTMLElement | undefined): Chrome => ({
       header: (s?.querySelector(":scope > header")?.cloneNode(true) as Element | undefined) ?? null,
@@ -189,11 +200,13 @@ export async function renderPaginated(
   pagesEl: HTMLElement,
   stylesEl: HTMLElement,
 ): Promise<number> {
-  await renderDocxInto(p.blob, p.families, pagesEl, stylesEl, p.shrinkJustify);
+  await renderDocxInto(p.blob, p.families, pagesEl, stylesEl, p.shrinkJustify, p.oldTableIndent);
   let chromeFor: ChromeFor | undefined;
   if (p.chrome.singleSection && (p.chrome.titlePg || p.chrome.evenOdd)) {
     const v = await probeChrome(p, pagesEl.parentElement ?? pagesEl.ownerDocument.body);
     chromeFor = (n) => (n === 1 && p.chrome.titlePg ? v.first : p.chrome.evenOdd && n % 2 === 0 ? v.even : v.odd);
   }
-  return paginate(pagesEl, chromeFor);
+  const total = paginate(pagesEl, chromeFor);
+  placeVmlLayers(pagesEl); // a paginação pode ter levado a âncora pra outra página
+  return total;
 }

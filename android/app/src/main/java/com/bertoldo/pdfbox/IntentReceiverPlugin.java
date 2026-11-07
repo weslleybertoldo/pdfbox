@@ -112,6 +112,7 @@ public class IntentReceiverPlugin extends Plugin {
       case "image/jpeg": return "jpg";
       case "image/webp": return "webp";
       case "application/vnd.openxmlformats-officedocument.wordprocessingml.document": return "docx";
+      case "application/msword": return "doc";
       default: return "bin";
     }
   }
